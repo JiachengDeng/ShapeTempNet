@@ -1,0 +1,7 @@
+*.npy
+*.yaml
+output/*
+data/datasets
+data
+**/__pycache__
+*.png

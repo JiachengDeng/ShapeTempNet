@@ -1,0 +1,61 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "train",
+            "type": "python",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "args":[ 
+                "--dataset_name","tosca",
+                "--do_train","true",
+                "--arch","LuckPointCorr_const_mae",
+                "--train_val_split", "0.8", 
+                "--train_batch_size","4",
+                "--val_batch_size","1",
+                "--test_batch_size","1",
+                "--optimizer","adam",
+                "--steplr2" ,
+                "--layer_list" ,"ssss" ,
+                "--d_feedforward" ,"512" ,
+                "--test_on_tosca", 
+                // "--learnedmask",
+                // "--compute_perm_loss",
+                // "--matrix_post_process", "ot",
+                //"--resume_from_checkpoint","/ssd/ljh/3d_match/DPC/ckpt/shrec/epoch=579.ckpt"
+            ],
+            "env": {"KMP_WARNINGS": "0",
+            "CUDA_VISIBLE_DEVICES": "2",}
+        },
+        {
+            "name": "test",
+            "type": "python",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "args":[ 
+                "--dataset_name","shrec",
+                "--do_train","false",
+                "--arch","LuckPointCorr_fps_mae",
+                "--train_val_split", "0.8", 
+                "--train_batch_size","4",
+                "--val_batch_size","1",
+                "--test_batch_size","1",
+                "--optimizer","adam",
+                "--steplr2" ,
+                "--layer_list" ,"ssss" ,
+                "--d_feedforward" ,"512" ,
+                "--test_on_shrec", 
+                // "--compute_perm_loss",
+                // "--matrix_post_process", "offline_ot",
+                "--resume_from_checkpoint", "/ssd/djc/PointCorrespondence/DPC_mae/output/shape_corr/LuckPointCorr/arch_LuckPointCorr_fps_mae/dataset_name_shrec/latent_dim_768/31_07:19:04:29/epoch=224.ckpt",
+            ],
+            "env": {"KMP_WARNINGS": "0",
+            "CUDA_VISIBLE_DEVICES": "5",}
+        }
+    ]
+    
+}
