@@ -4,7 +4,7 @@ from data.point_cloud_db.point_cloud_dataset import PointCloudDataset
 from models.sub_models.dgcnn.dgcnn_modular import DGCNN_MODULAR
 from models.sub_models.dgcnn.dgcnn import get_graph_feature
 
-from models.sub_models.cross_attention.transformers import FlexibleTransformerEncoder, LuckTransformerEncoder
+from models.sub_models.cross_attention.transformers import FlexibleTransformerEncoder, LuckTransformerEncoder, TemplateTransformerEncoder
 from models.sub_models.cross_attention.transformers import TransformerSelfLayer, TransformerCrossLayer, LuckSelfLayer
 from models.sub_models.cross_attention.position_embedding import PositionEmbeddingCoordsSine, \
     PositionEmbeddingLearned
@@ -61,17 +61,7 @@ class TemplatePointCorr(ShapeCorrTemplate):
         
         self.encoder_norm = nn.LayerNorm(self.hparams.d_embed) if self.hparams.pre_norm else None
         
-        self.encoder_CROSS = LuckTransformerEncoder(hparams, self.hparams.layer_list, self.encoder_norm, True)
-        
-        self.pos_embed = PositionEmbeddingCoordsSine(3, self.hparams.d_embed, scale= 1.0)
-        ###
-        
-        ###Shape Selective whitening
-        # if self.hparams.old_ssw:
-        #     self.loss_stereo_ssw = StereoWhiteningLoss()
-        # else:
-        #     self.loss_stereo_ssw = ShapeWhiteningLoss()
-        ###
+        self.encoder = TemplateTransformerEncoder(hparams, self.hparams.layer_list, self.encoder_norm, True)
 
         self.chamfer_dist_3d = dist_chamfer_3D.chamfer_3DDist()
 
@@ -109,24 +99,109 @@ class TemplatePointCorr(ShapeCorrTemplate):
             self.optimizer = torch.optim.Adam(self.parameters(), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)
             self.scheduler = MultiStepLR(self.optimizer, milestones=[6, 9], gamma=0.1)
         return [self.optimizer], [self.scheduler]
+    
 
-    # def compute_deep_features(self, shape):
-    #     if self.hparams.compute_ssw_loss:
-    #         shape["dense_output_features"], shape["intermediate_features"] = self.encoder_DGCNN.forward_per_point(shape["pos"], start_neighs=shape["neigh_idxs"])
-    #     else:
-    #         shape["dense_output_features"] = self.encoder_DGCNN.forward_per_point(shape["pos"], start_neighs=shape["neigh_idxs"])
-    #     return shape
+    def normalize_data(self, batch_data):
+        """ Normalize the batch data, use coordinates of the block centered at origin,
+            Input:
+                BxNxC array
+            Output:
+                BxNxC array
+        """
+        B, N, C = batch_data.shape
+        normal_data = torch.zeros((B, N, C)).cuda()
+        for b in range(B):
+            pc = batch_data[b]
+            centroid = torch.mean(pc, axis=0)
+            pc = pc - centroid
+            m = torch.max(torch.sqrt(torch.sum(pc ** 2, axis=1)))
+            pc = pc / m
+            normal_data[b] = pc
+        return normal_data
+
+    def rotate_point_cloud_by_angle(self,batch_data):
+        """ Rotate the point cloud along up direction with certain angle.
+            Input:
+            BxNx3 array, original batch of point clouds
+            Return:
+            BxNx3 array, rotated batch of point clouds
+        """
+        rotated_data = torch.zeros(batch_data.shape, dtype=torch.float32).cuda()
+        rotated_gt = torch.zeros((batch_data.shape[0]), dtype=torch.long).cuda()
+        for k in range(batch_data.shape[0]):
+            toss = torch.randint(8,(1,))
+            #toss = 6
+            rotation_angle = self.ANGLE[toss]
+            #rotation_angle = bimodal.sample(1)
+            #rotation_angle = torch.rand((1)) * 2 * np.pi
+            cosval = torch.cos(rotation_angle)
+            sinval = torch.sin(rotation_angle)
+            rotated_gt[k] = toss
+            #rotated_gt[k,1] = cosval
+            rotation_matrix = torch.tensor([[cosval, 0, sinval],
+                                        [0, 1, 0],
+                                        [-sinval, 0, cosval]]).cuda()
+            shape_pc = batch_data[k,:,0:3]
+            rotated_data[k,:,0:3] = torch.mm(shape_pc.reshape((-1, 3)), rotation_matrix)
+
+        return rotated_data,rotated_gt
+
+    def rotate_point_cloud_for_animal(self,batch_data, rotation_angle, axis = 'Y'):
+        """ Rotate the point cloud along up direction with certain angle.
+            Input:
+            BxNx3 array, original batch of point clouds
+            Return:
+            BxNx3 array, rotated batch of point clouds
+        """
+        rotated_data = torch.zeros(batch_data.shape, dtype=torch.float32).cuda()
+        for k in range(batch_data.shape[0]):
+            cosval = torch.cos(rotation_angle)
+            sinval = torch.sin(rotation_angle)
+            if axis == 'X':
+                rotation_matrix = torch.tensor([[1, 0, 0],
+                                            [0, cosval, sinval],
+                                            [0, -sinval, cosval]]).cuda()
+            elif axis == 'Y':
+                rotation_matrix = torch.tensor([[cosval, 0, sinval],
+                                            [0, 1, 0],
+                                            [-sinval, 0, cosval]]).cuda()
+            elif axis == 'Z':
+                rotation_matrix = torch.tensor([[cosval, sinval, 0],
+                                            [-sinval, cosval, 0],
+                                            [0, 0, 1]]).cuda()
+
+            shape_pc = batch_data[k,:,0:3]
+            rotated_data[k,:,0:3] = torch.mm(shape_pc.reshape((-1, 3)), rotation_matrix)
+
+        return rotated_data
     
     def compute_self_features(self, source, target): 
+        # if  self.hparams.mode == 'train' or self.hparams.mode == 'val':
+        #   source["pos"] = self.rotate_point_cloud_for_animal(source["pos"], torch.tensor(-0.5*torch.pi), 'Z') #SMAL
+        #   source["pos"] = self.rotate_point_cloud_for_animal(source["pos"], torch.tensor(-0.5*torch.pi), 'X') #SMAL
+        #   target["pos"] = self.rotate_point_cloud_for_animal(target["pos"], torch.tensor(-0.5*torch.pi), 'Z') #SMAL
+        #   target["pos"] = self.rotate_point_cloud_for_animal(target["pos"], torch.tensor(-0.5*torch.pi), 'X') #SMAL
+        # else:
+        #   #print('111')
+        #   source["pos"] = self.rotate_point_cloud_for_animal(source["pos"], torch.tensor(-0.5*torch.pi), 'X') #TOSCA
+        #   target["pos"] = self.rotate_point_cloud_for_animal(target["pos"], torch.tensor(-0.5*torch.pi), 'X') #TOSCA
+        # source["pos"] = self.normalize_data(source["pos"])
+        # target["pos"] = self.normalize_data(target["pos"])
+
+        # if  self.hparams.mode == 'train' or self.hparams.mode == 'val':
+        #     #src_pos_student,rotated_src_student= self.rotate_point_cloud_by_angle(source["pos"])
+        #     target["pos"],rotated_gt_student = self.rotate_point_cloud_by_angle(target["pos"])
         
-        #source_pe=self.pos_embed(source["pos"].reshape(-1,3)).reshape(-1,1024,self.hparams.d_embed)
-        #target_pe=self.pos_embed(target["pos"].reshape(-1,3)).reshape(-1,1024,self.hparams.d_embed)
-        src_out, tgt_out = self.encoder_CROSS(
-            source["pos"].transpose(0,1),  target["pos"].transpose(0,1),
+        src_out = self.encoder(
+            source["pos"].transpose(0,1),  
             src_xyz = source["pos"],
-            tgt_xyz = target["pos"],
             src_neigh = source["neigh_idxs"],
-            tgt_neigh = target["neigh_idxs"],
+        )
+        
+        tgt_out = self.encoder(
+            target["pos"].transpose(0,1),
+            src_xyz = target["pos"],
+            src_neigh = target["neigh_idxs"],
         )
         
         source["dense_output_features"] = src_out.transpose(1,2)
@@ -288,12 +363,6 @@ class TemplatePointCorr(ShapeCorrTemplate):
             self.losses[f"neigh_loss_fwd"] = self.hparams.neigh_loss_lambda * data[f"neigh_loss_fwd_unscaled"]
             self.losses[f"neigh_loss_bac"] = self.hparams.neigh_loss_lambda * data[f"neigh_loss_bac_unscaled"]
 
-        #TODO: change current epoch
-        if self.hparams.compute_ssw_loss and self.hparams.ssw_loss_lambda > 0.0 and self.current_epoch >= self.hparams.max_epochs-100:
-            cov_list=self.loss_stereo_ssw.cal_cov([data["source"]["intermediate_features"],data["target"]["intermediate_features"]])
-            data[f"ssw_loss"] = self.loss_stereo_ssw(data["source"]["intermediate_features"], cov_list=cov_list, weight=0.01)
-            
-            self.losses[f"source_ssw_loss"] = self.hparams.ssw_loss_lambda * data[f"ssw_loss"]
 
         self.track_metrics(data)
         
@@ -392,14 +461,7 @@ class TemplatePointCorr(ShapeCorrTemplate):
         parser.add_argument("--testlr", nargs="?", default=False, type=str2bool, const=True, help="whether to use test lr")
         parser.add_argument("--slr", type=float, default= 5e-4, help="steplr learning rate")
         parser.add_argument("--swd", default=5e-4, type=float, help="steplr2 weight decay")
-        parser.add_argument("--layer_list", type=list, default=['s', 'c', 's', 'c', 's', 'c', 's', 'c'], help="encoder layer list")
-        
-        '''
-        Shape Selective Whitening Loss-related args
-        '''
-        parser.add_argument("--old_ssw", nargs="?", default=False, type=str2bool, const=True, help="whether to use old shape whitening loss(similar to stereowhiteningloss)")
-        parser.add_argument("--compute_ssw_loss", nargs="?", default=False, type=str2bool, const=True, help="whether to compute shape selective whitening loss")
-        parser.add_argument("--ssw_loss_lambda", type=float, default=3.0, help="weight for SSW loss")
+        parser.add_argument("--layer_list", type=list, default=['s', 's', 's', 's'], help="encoder layer list")
         
         '''
         Dual Softmax Loss-related args
@@ -410,7 +472,7 @@ class TemplatePointCorr(ShapeCorrTemplate):
             optimizer="adam",
             lr=0.0003,
             weight_decay=5e-4,
-            max_epochs=300, 
+            max_epochs=600, 
             accumulate_grad_batches=2,
             latent_dim=768,
             bb_size=24,
