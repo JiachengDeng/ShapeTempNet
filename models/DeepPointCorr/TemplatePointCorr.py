@@ -10,6 +10,8 @@ from models.sub_models.cross_attention.position_embedding import PositionEmbeddi
     PositionEmbeddingLearned
 from models.sub_models.cross_attention.warmup import WarmUpScheduler
 
+from models.sub_models.autoencoder.auto_encoder import PointCloudAE
+
 
 import numpy as np
 
@@ -62,7 +64,11 @@ class TemplatePointCorr(ShapeCorrTemplate):
         self.encoder_norm = nn.LayerNorm(self.hparams.d_embed) if self.hparams.pre_norm else None
         
         self.encoder = TemplateTransformerEncoder(hparams, self.hparams.layer_list, self.encoder_norm, True)
-
+        
+        self.autoencoder = PointCloudAE(self.hparams.ae_d_embed, 1024)
+        self.accumulate_count = 0
+        self.template_embed = torch.zeros((1,self.hparams.ae_d_embed)).cuda()
+        
         self.chamfer_dist_3d = dist_chamfer_3D.chamfer_3DDist()
 
         self.accuracy_assume_eye = AccuracyAssumeEye()
@@ -191,45 +197,95 @@ class TemplatePointCorr(ShapeCorrTemplate):
         # if  self.hparams.mode == 'train' or self.hparams.mode == 'val':
         #     #src_pos_student,rotated_src_student= self.rotate_point_cloud_by_angle(source["pos"])
         #     target["pos"],rotated_gt_student = self.rotate_point_cloud_by_angle(target["pos"])
+        template = {}
+        src_ae_embed, src_dec_pc = self.autoencoder(source["pos"])
+        tgt_ae_embed, tgt_dec_pc = self.autoencoder(target["pos"])
         
-        src_out = self.encoder(
+        source["ae_pos"] = src_dec_pc
+        target["ae_pos"] = tgt_dec_pc
+        
+        # ! Bug: Trying to backward through the graph a second time (or directly access saved tensors after they have already been freed). Saved intermediate values of the graph are freed when you call .backward() or autograd.grad(). Specify retain_graph=True if you need to backward through the graph a second time or if you need to access saved tensors after calling backward.
+        self.template_embed = (self.template_embed.detach()*self.accumulate_count+ torch.mean(src_ae_embed, dim=0, keepdim=True) + torch.mean(tgt_ae_embed, dim=0, keepdim=True))/(self.accumulate_count+2)
+        self.accumulate_count += 2
+        
+        _, template["pos"] = self.autoencoder(None, self.template_embed)  #template_shape = [1, 1024, 3]
+
+        if self.hparams.batch_idx==0:
+            templa = template["pos"].detach().cpu().numpy()
+            np.save("./template-shape-tosca-traintemp/epoch_{}".format(self.current_epoch), templa)
+
+
+        template["pos"] = template["pos"].repeat(source["pos"].shape[0],1,1)  #convenient for code but not efficient
+    
+        # * Compute template neigh idxs same as src and target before
+        template["edge_index"], template["neigh_idxs"] = self.edge_neibor_compute(template["pos"])
+        
+        template_out, template_inter = self.encoder(
+            template["pos"].transpose(0,1),  
+            src_xyz = template["pos"],
+            src_neigh = template["neigh_idxs"],
+        )
+        
+        src_out, src_inter = self.encoder(
             source["pos"].transpose(0,1),  
             src_xyz = source["pos"],
             src_neigh = source["neigh_idxs"],
         )
         
-        tgt_out = self.encoder(
+        tgt_out, tgt_inter = self.encoder(
             target["pos"].transpose(0,1),
             src_xyz = target["pos"],
             src_neigh = target["neigh_idxs"],
         )
         
+        template["dense_output_features"] = template_out.transpose(1,2)   #template["dense_output_features"] = [B, N, C]
         source["dense_output_features"] = src_out.transpose(1,2)
         target["dense_output_features"] = tgt_out.transpose(1,2)
         
-        return source, target
+        template["inter_features"] = template_inter  #template["inter_features"] = [[B,C1,N], [B,C2,N], [B,C3,N], [B,C4,N]]
+        source["inter_features"] = src_inter
+        target["inter_features"] = tgt_inter
+
+        return source, target, template
 
     def forward_source_target(self, source, target):
         
         ###transformers     
-        source, target = self.compute_self_features(source, target)
+        source, target, template = self.compute_self_features(source, target)
         ###
 
         # measure cross similarity
         P_non_normalized = switch_functions.measure_similarity(self.hparams.similarity_init, source["dense_output_features"], target["dense_output_features"])
+        P_st_non_normalized = switch_functions.measure_similarity(self.hparams.similarity_init, source["dense_output_features"], template["dense_output_features"])
+        P_tt_non_normalized = switch_functions.measure_similarity(self.hparams.similarity_init, target["dense_output_features"], template["dense_output_features"])
         
         temperature = None
+        
         P_normalized = P_non_normalized
+        P_st_normalized = P_st_non_normalized
+        P_tt_normalized = P_tt_non_normalized
 
         # cross nearest neighbors and weights
         source["cross_nn_weight"], source["cross_nn_sim"], source["cross_nn_idx"], target["cross_nn_weight"], target["cross_nn_sim"], target["cross_nn_idx"] =\
             get_s_t_neighbors(self.hparams.k_for_cross_recon, P_normalized, sim_normalization=self.hparams.sim_normalization)
+              
+        if self.hparams.template_cross_lambda > 0.0:    
+            source["t_cross_nn_weight"], source["t_cross_nn_sim"], source["t_cross_nn_idx"], template["s_cross_nn_weight"], template["s_cross_nn_sim"], template["s_cross_nn_idx"] =\
+                get_s_t_neighbors(self.hparams.k_for_cross_recon, P_st_normalized, sim_normalization=self.hparams.sim_normalization)
+            target["t_cross_nn_weight"], target["t_cross_nn_sim"], target["t_cross_nn_idx"], template["t_cross_nn_weight"], template["t_cross_nn_sim"], template["t_cross_nn_idx"] =\
+                get_s_t_neighbors(self.hparams.k_for_cross_recon, P_tt_normalized, sim_normalization=self.hparams.sim_normalization)
 
         # cross reconstruction
         source["cross_recon"], source["cross_recon_hard"] = self.reconstruction(source["pos"], target["cross_nn_idx"], target["cross_nn_weight"], self.hparams.k_for_cross_recon)
         target["cross_recon"], target["cross_recon_hard"] = self.reconstruction(target["pos"], source["cross_nn_idx"], source["cross_nn_weight"], self.hparams.k_for_cross_recon)
+        
+        if self.hparams.template_cross_lambda > 0.0:
+            source["t_cross_recon"], source["t_cross_recon_hard"] = self.reconstruction(source["pos"], template["s_cross_nn_idx"], template["s_cross_nn_weight"], self.hparams.k_for_cross_recon)
+            template["s_cross_recon"], template["s_cross_recon_hard"] = self.reconstruction(template["pos"], source["t_cross_nn_idx"], source["t_cross_nn_weight"], self.hparams.k_for_cross_recon)
+            target["t_cross_recon"], target["t_cross_recon_hard"] = self.reconstruction(target["pos"], template["t_cross_nn_idx"], template["t_cross_nn_weight"], self.hparams.k_for_cross_recon)
+            template["t_cross_recon"], template["t_cross_recon_hard"] = self.reconstruction(template["pos"], target["t_cross_nn_idx"], target["t_cross_nn_weight"], self.hparams.k_for_cross_recon)
 
-        return source, target, P_normalized, temperature
+        return source, target, template, P_normalized, temperature
 
     @staticmethod
     def reconstruction(pos, nn_idx, nn_weight, k):
@@ -303,17 +359,10 @@ class TemplatePointCorr(ShapeCorrTemplate):
     def forward(self, data):
         
         for shape in ["source", "target"]:
-            data[shape]["edge_index"] = [
-                knn(data[shape]["pos"][i], data[shape]["pos"][i], self.hparams.num_neighs,)
-                for i in range(data[shape]["pos"].shape[0])
-            ]
-            data[shape]["neigh_idxs"] = torch.stack(
-                [data[shape]["edge_index"][i][1].reshape(data[shape]["pos"].shape[1], -1) for i in range(data[shape]["pos"].shape[0])]
-            )
-
+            data[shape]["edge_index"], data[shape]["neigh_idxs"] = self.edge_neibor_compute(data[shape]["pos"])
         # dense features, similarity, and cross reconstruction
 
-        data["source"], data["target"], data["P_normalized"], data["temperature"] = self.forward_source_target(data["source"], data["target"])
+        data["source"], data["target"], data["template"], data["P_normalized"], data["temperature"] = self.forward_source_target(data["source"], data["target"])
         
         # ### For visualizations
         # if self.hparams.mode == "val":
@@ -327,6 +376,20 @@ class TemplatePointCorr(ShapeCorrTemplate):
         #     # np.save("./smal-test/label_{}".format(batch_idx), label_cpu)
         # ###
 
+        # * Template-related losses
+        #chamfer-loss for auto encoder
+        if self.hparams.ae_lambda > 0.0:
+            self.losses['ae_loss'] = self.hparams.ae_lambda*(self.chamfer_loss(data["source"]["pos"], data["source"]["ae_pos"])+self.chamfer_loss(data["target"]["pos"], data["target"]["ae_pos"]))
+        #template cross reconstruction loss
+        if self.hparams.template_cross_lambda > 0.0:
+            self.losses["template_source_cross_recon_loss"] = self.hparams.template_cross_lambda * (self.chamfer_loss(data["source"]["pos"], data["source"]["t_cross_recon"])+self.chamfer_loss(data["template"]["pos"], data["template"]["s_cross_recon"]))
+            self.losses["template_target_cross_recon_loss"] =self.hparams.template_cross_lambda * (self.chamfer_loss(data["target"]["pos"], data["target"]["t_cross_recon"])+self.chamfer_loss(data["template"]["pos"], data["target"]["t_cross_recon"]))
+
+        #template mapping loss
+        if self.hparams.template_neigh_lambda > 0.0:
+            pass
+        
+        # * Template-related losses
         
         # cross reconstruction losses
         self.losses[f"source_cross_recon_loss"] = self.hparams.cross_recon_lambda * self.chamfer_loss(data["source"]["pos"], data["source"]["cross_recon"])
@@ -411,6 +474,17 @@ class TemplatePointCorr(ShapeCorrTemplate):
         visualize_pair_corr(self,batch, mode=mode)
         visualize_reconstructions(self,batch, mode=mode)
         
+    def edge_neibor_compute(self, pos):  #pos = [B, N, 3]
+        edge_index = [
+            knn(pos[i], pos[i], self.hparams.num_neighs,)
+            for i in range(pos.shape[0])
+        ]
+        neigh_idxs = torch.stack(
+            [edge_index[i][1].reshape(pos.shape[1], -1) for i in range(pos.shape[0])]
+        )
+        
+        return edge_index, neigh_idxs
+        
     @staticmethod
     def add_model_specific_args(parent_parser, task_name, dataset_name, is_lowest_leaf=False):
         parser = ShapeCorrTemplate.add_model_specific_args(parent_parser, task_name, dataset_name, is_lowest_leaf=False)
@@ -468,6 +542,15 @@ class TemplatePointCorr(ShapeCorrTemplate):
         '''
         parser.add_argument("--use_dualsoftmax_loss", nargs="?", default=False, type=str2bool, const=True, help="whether to use dual softmax loss")
 
+
+        '''
+        Template-related args
+        '''
+        parser.add_argument("--ae_d_embed", type=int, default=512, help="auto encoder embedding dim")
+        parser.add_argument("--ae_lambda", type=float, default=1.0, help="weight for auto encoder loss")
+        parser.add_argument("--template_cross_lambda", type=float, default=1.0, help="weight for cross reconstruction loss between template and source/target")
+        parser.add_argument("--template_neigh_lambda", type=float, default=1.0, help="weight for neighbor smoothness loss between template and source/target")
+        
         parser.set_defaults(
             optimizer="adam",
             lr=0.0003,

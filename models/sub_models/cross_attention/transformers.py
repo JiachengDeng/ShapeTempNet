@@ -905,12 +905,12 @@ class TemplateTransformerEncoder(nn.Module):
             src = torch.cat((src, src_out), dim=2)
             
             if self.return_intermediate:
-                src_intermediate.append(src_out)
-
-        # if self.return_intermediate:
-        #     return torch.stack(src_intermediate), torch.stack(tgt_intermediate)
+                src_intermediate.append(src_out.permute(1,2,0))
+    
+        src = self.mlp(torch.cat(src_intermediate, dim=1))
         
-        src = self.mlp(torch.cat(src_intermediate, dim=2).permute(1,2,0))
+        if self.return_intermediate:
+            return src, src_intermediate
         
         return src
 
