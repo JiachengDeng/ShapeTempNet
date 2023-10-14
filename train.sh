@@ -1,9 +1,9 @@
-CUDA_VISIBLE_DEVICES=8 python train_point_corr.py \
---dataset_name shrec \
+CUDA_VISIBLE_DEVICES=3 python train_point_corr.py \
+--dataset_name tosca \
 --train_batch_size 4 \
 --do_train true \
 --optimizer adam \
---arch LuckPointCorr_const_mae \
+--arch TemplatePointCorr \
 --ckpt_period 5 \
 --train_val_split 0.8 \
 --val_batch_size 1 \
@@ -11,7 +11,9 @@ CUDA_VISIBLE_DEVICES=8 python train_point_corr.py \
 --layer_list ssss \
 --d_feedforward 512 \
 --steplr2 \
---test_on_shrec true \
+--test_on_tosca true \
+--max_epochs 600 \
+--template_cross_lambda 0.0 \
 # --learnedmask \
 # --matrix_post_process ot \
 # --resume_from_checkpoint "/ssd/djc/PointCorrespondence/DPC_mae/output/shape_corr/LuckPointCorr/arch_LuckPointCorr_fps_mae/dataset_name_smal/latent_dim_768/22_08:21:20:21/epoch=309.ckpt" \
