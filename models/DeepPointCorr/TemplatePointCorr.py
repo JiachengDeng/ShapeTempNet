@@ -66,8 +66,8 @@ class TemplatePointCorr(ShapeCorrTemplate):
         self.encoder = TemplateTransformerEncoder(hparams, self.hparams.layer_list, self.encoder_norm, True)
         
         self.autoencoder = PointCloudAE(self.hparams.ae_d_embed, 1024)
-        self.accumulate_count = 0
-        self.template_embed = torch.zeros((1,self.hparams.ae_d_embed)).cuda()
+        self.accumulate_count = torch.zeros((6), dtype=torch.long).cuda()
+        self.template_embed = torch.zeros((6,self.hparams.ae_d_embed)).cuda()
         
         self.chamfer_dist_3d = dist_chamfer_3D.chamfer_3DDist()
 
@@ -106,6 +106,24 @@ class TemplatePointCorr(ShapeCorrTemplate):
             self.scheduler = MultiStepLR(self.optimizer, milestones=[6, 9], gamma=0.1)
         return [self.optimizer], [self.scheduler]
     
+    def id2idx(self, id):
+        idx_list = torch.zeros((id.shape), dtype=torch.long)
+        for idx in range(id.shape[0]):
+            if id[idx] <=10:
+                idx_list[idx] = 0
+            elif id[idx] >10 and id[idx] <=16:
+                idx_list[idx] = 1
+            elif id[idx] >16 and id[idx] <=25:
+                idx_list[idx] = 2
+            elif id[idx] >25 and id[idx] <=29:
+                idx_list[idx] = 3
+            elif id[idx] >29 and id[idx] <=37:
+                idx_list[idx] = 4
+            elif id[idx] >37 and id[idx] <=40:
+                idx_list[idx] = 5
+            else:
+                assert(id[idx] <= 40), "shape ID is not valid, supposed to be in [0,40]"
+        return idx_list
 
     def normalize_data(self, batch_data):
         """ Normalize the batch data, use coordinates of the block centered at origin,
@@ -204,18 +222,25 @@ class TemplatePointCorr(ShapeCorrTemplate):
         source["ae_pos"] = src_dec_pc
         target["ae_pos"] = tgt_dec_pc
         
+        src_idx = self.id2idx(source['id'])
+        tgt_idx = self.id2idx(target['id'])
+        
+
+        
         # ! Bug: Trying to backward through the graph a second time (or directly access saved tensors after they have already been freed). Saved intermediate values of the graph are freed when you call .backward() or autograd.grad(). Specify retain_graph=True if you need to backward through the graph a second time or if you need to access saved tensors after calling backward.
-        self.template_embed = (self.template_embed.detach()*self.accumulate_count+ torch.mean(src_ae_embed, dim=0, keepdim=True) + torch.mean(tgt_ae_embed, dim=0, keepdim=True))/(self.accumulate_count+2)
-        self.accumulate_count += 2
+        self.template_embed[src_idx] = (torch.mul(self.template_embed.detach()[src_idx], self.accumulate_count[src_idx].unsqueeze(1))+ src_ae_embed)/(self.accumulate_count[src_idx].unsqueeze(1)+1)
+        self.template_embed[tgt_idx] = (torch.mul(self.template_embed.detach()[tgt_idx], self.accumulate_count[tgt_idx].unsqueeze(1))+ tgt_ae_embed)/(self.accumulate_count[tgt_idx].unsqueeze(1)+1)
+        self.accumulate_count[src_idx] += 1
+        self.accumulate_count[tgt_idx] += 1
         
         _, template["pos"] = self.autoencoder(None, self.template_embed)  #template_shape = [1, 1024, 3]
 
         if self.hparams.batch_idx==0:
             templa = template["pos"].detach().cpu().numpy()
-            np.save("./template-shape-tosca-traintemp/epoch_{}".format(self.current_epoch), templa)
+            np.save("./Template_visualization/input/SixTemplate-tosca-fulltrain/epoch_{}".format(self.current_epoch), templa)
+        
+        template["pos"] = template["pos"].detach()[src_idx]
 
-
-        template["pos"] = template["pos"].repeat(source["pos"].shape[0],1,1)  #convenient for code but not efficient
     
         # * Compute template neigh idxs same as src and target before
         template["edge_index"], template["neigh_idxs"] = self.edge_neibor_compute(template["pos"])
@@ -361,7 +386,6 @@ class TemplatePointCorr(ShapeCorrTemplate):
         for shape in ["source", "target"]:
             data[shape]["edge_index"], data[shape]["neigh_idxs"] = self.edge_neibor_compute(data[shape]["pos"])
         # dense features, similarity, and cross reconstruction
-
         data["source"], data["target"], data["template"], data["P_normalized"], data["temperature"] = self.forward_source_target(data["source"], data["target"])
         
         # ### For visualizations
