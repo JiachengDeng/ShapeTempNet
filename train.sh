@@ -1,4 +1,4 @@
-CUDA_VISIBLE_DEVICES=3 python train_point_corr.py \
+CUDA_VISIBLE_DEVICES=1 python train_point_corr.py \
 --dataset_name tosca \
 --train_batch_size 4 \
 --do_train true \
