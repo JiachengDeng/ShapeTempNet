@@ -1,5 +1,5 @@
-CUDA_VISIBLE_DEVICES=1 python train_point_corr.py \
---dataset_name tosca \
+CUDA_VISIBLE_DEVICES=9 python train_point_corr.py \
+--dataset_name shrec \
 --train_batch_size 4 \
 --do_train true \
 --optimizer adam \
@@ -11,8 +11,8 @@ CUDA_VISIBLE_DEVICES=1 python train_point_corr.py \
 --layer_list ssss \
 --d_feedforward 512 \
 --steplr2 \
---test_on_tosca true \
---max_epochs 600 \
+--test_on_shrec true \
+--max_epochs 300 \
 --template_cross_lambda 0.0 \
 # --learnedmask \
 # --matrix_post_process ot \
