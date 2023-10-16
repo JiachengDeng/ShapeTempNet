@@ -106,24 +106,39 @@ class TemplatePointCorr(ShapeCorrTemplate):
             self.scheduler = MultiStepLR(self.optimizer, milestones=[6, 9], gamma=0.1)
         return [self.optimizer], [self.scheduler]
     
-    def id2idx(self, id):
-        idx_list = torch.zeros((id.shape), dtype=torch.long)
-        for idx in range(id.shape[0]):
-            if id[idx] <=10:
-                idx_list[idx] = 0
-            elif id[idx] >10 and id[idx] <=16:
-                idx_list[idx] = 1
-            elif id[idx] >16 and id[idx] <=25:
-                idx_list[idx] = 2
-            elif id[idx] >25 and id[idx] <=29:
-                idx_list[idx] = 3
-            elif id[idx] >29 and id[idx] <=37:
-                idx_list[idx] = 4
-            elif id[idx] >37 and id[idx] <=40:
-                idx_list[idx] = 5
-            else:
-                assert(id[idx] <= 40), "shape ID is not valid, supposed to be in [0,40]"
-        return idx_list
+    def id2idx(self, id, dataset_name = 'tosca'):
+        if dataset_name == 'tosca':
+            idx_list = torch.zeros((id.shape), dtype=torch.long)
+            for idx in range(id.shape[0]):
+                if id[idx] <=10:
+                    idx_list[idx] = 0
+                elif id[idx] >10 and id[idx] <=16:
+                    idx_list[idx] = 1
+                elif id[idx] >16 and id[idx] <=25:
+                    idx_list[idx] = 2
+                elif id[idx] >25 and id[idx] <=29:
+                    idx_list[idx] = 3
+                elif id[idx] >29 and id[idx] <=37:
+                    idx_list[idx] = 4
+                elif id[idx] >37 and id[idx] <=40:
+                    idx_list[idx] = 5
+                else:
+                    assert(id[idx] <= 40), "shape ID is not valid, supposed to be in [0,40]"
+            return idx_list
+        elif dataset_name == 'shrec':
+            mapping_dict = {
+                0: 0, 2: 0, 4: 0, 5: 0, 10: 0, 11: 0, 12: 0, 14: 0, 17: 0, 18: 0, 19: 0, 20: 0, 26: 0, 30: 0, 34: 0, 41: 0, 42: 0, 43: 0,
+                7: 1, 15: 1, 16: 1, 21: 1, 22: 1, 23: 1, 28: 1,
+                25: 2, 33: 2, 37: 2,
+                3: 3, 6: 3, 8: 3, 40: 3,
+                1: 4, 13: 4, 32: 4, 36: 4,
+                9: 5, 24: 5, 27: 5, 29: 5, 31: 5, 35: 5, 38: 5, 39: 5
+            }
+            idx_list = torch.zeros((id.shape), dtype=torch.long)
+            for idx in range(id.shape[0]):
+                assert(id[idx] <= 43), "shape ID is not valid, supposed to be in [0,43]"
+                idx_list[idx] = mapping_dict[int(id[idx])]
+            return idx_list
 
     def normalize_data(self, batch_data):
         """ Normalize the batch data, use coordinates of the block centered at origin,
@@ -222,8 +237,8 @@ class TemplatePointCorr(ShapeCorrTemplate):
         source["ae_pos"] = src_dec_pc
         target["ae_pos"] = tgt_dec_pc
         
-        src_idx = self.id2idx(source['id'])
-        tgt_idx = self.id2idx(target['id'])
+        src_idx = self.id2idx(source['id'], self.hparams.dataset_name)
+        tgt_idx = self.id2idx(target['id'], self.hparams.dataset_name)
         
 
         
@@ -237,7 +252,7 @@ class TemplatePointCorr(ShapeCorrTemplate):
 
         if self.hparams.batch_idx==0:
             templa = template["pos"].detach().cpu().numpy()
-            np.save("./Template_visualization/input/SixTemplate-tosca-fulltrain/epoch_{}".format(self.current_epoch), templa)
+            np.save("./Template_visualization/input/SixTemplate-shrec-traintemp/epoch_{}".format(self.current_epoch), templa)
         
         template["pos"] = template["pos"].detach()[src_idx]
 
@@ -579,7 +594,7 @@ class TemplatePointCorr(ShapeCorrTemplate):
             optimizer="adam",
             lr=0.0003,
             weight_decay=5e-4,
-            max_epochs=600, 
+            max_epochs=300, 
             accumulate_grad_batches=2,
             latent_dim=768,
             bb_size=24,
