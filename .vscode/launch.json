@@ -9,9 +9,9 @@
             "console": "integratedTerminal",
             "justMyCode": false,
             "args":[ 
-                "--dataset_name","tosca",
+                "--dataset_name","shrec",
                 "--do_train","true",
-                "--arch","LuckPointCorr_const_mae",
+                "--arch","TemplatePointCorr",
                 "--train_val_split", "0.8", 
                 "--train_batch_size","4",
                 "--val_batch_size","1",
@@ -20,14 +20,15 @@
                 "--steplr2" ,
                 "--layer_list" ,"ssss" ,
                 "--d_feedforward" ,"512" ,
-                "--test_on_tosca", 
+                "--test_on_shrec", 
+                // "--template_cross_lambda", "0",
                 // "--learnedmask",
                 // "--compute_perm_loss",
                 // "--matrix_post_process", "ot",
                 //"--resume_from_checkpoint","/ssd/ljh/3d_match/DPC/ckpt/shrec/epoch=579.ckpt"
             ],
             "env": {"KMP_WARNINGS": "0",
-            "CUDA_VISIBLE_DEVICES": "2",}
+            "CUDA_VISIBLE_DEVICES": "7",}
         },
         {
             "name": "test",
