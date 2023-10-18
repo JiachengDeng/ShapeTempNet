@@ -36,6 +36,8 @@ from models.sub_models.dgcnn.dgcnn import DGCNN as non_geo_DGCNN
 from utils.argparse_init import str2bool
 
 from ChamferDistancePytorch.chamfer3D import dist_chamfer_3D
+
+import itertools
  
 
 
@@ -65,9 +67,18 @@ class ImplicitTemplatePointCorr(ShapeCorrTemplate):
         
         self.encoder = TemplateTransformerEncoder(hparams, self.hparams.layer_list, self.encoder_norm, True)
         
-        self.autoencoder = PointCloudAE(self.hparams.ae_d_embed, 1024)
-        self.accumulate_count = torch.zeros((6), dtype=torch.long).cuda()
-        self.template_embed = torch.zeros((6,self.hparams.ae_d_embed)).cuda()
+
+        self.template_pos = nn.Parameter(torch.zeros((self.hparams.num_template, 1024, 3)))
+        self.template_embed = nn.Parameter(torch.zeros((self.hparams.num_template, 1024, self.hparams.d_embed)))
+        nn.init.trunc_normal_(
+            self.template_pos, mean=0, std=1, a=-1, b=1
+        )
+        nn.init.trunc_normal_(
+            self.template_embed, mean=0, std=0.01, a=-1, b=1
+        )
+        self.global_mlp = nn.Sequential(
+                nn.Conv1d(self.hparams.d_embed, self.hparams.d_embed, kernel_size=1, bias=False), nn.BatchNorm1d(self.hparams.d_embed), nn.LeakyReLU(negative_slope=0.2),
+            )
         
         self.chamfer_dist_3d = dist_chamfer_3D.chamfer_3DDist()
 
@@ -105,40 +116,6 @@ class ImplicitTemplatePointCorr(ShapeCorrTemplate):
             self.optimizer = torch.optim.Adam(self.parameters(), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)
             self.scheduler = MultiStepLR(self.optimizer, milestones=[6, 9], gamma=0.1)
         return [self.optimizer], [self.scheduler]
-    
-    def id2idx(self, id, dataset_name = 'tosca'):
-        if dataset_name == 'tosca':
-            idx_list = torch.zeros((id.shape), dtype=torch.long)
-            for idx in range(id.shape[0]):
-                if id[idx] <=10:
-                    idx_list[idx] = 0
-                elif id[idx] >10 and id[idx] <=16:
-                    idx_list[idx] = 1
-                elif id[idx] >16 and id[idx] <=25:
-                    idx_list[idx] = 2
-                elif id[idx] >25 and id[idx] <=29:
-                    idx_list[idx] = 3
-                elif id[idx] >29 and id[idx] <=37:
-                    idx_list[idx] = 4
-                elif id[idx] >37 and id[idx] <=40:
-                    idx_list[idx] = 5
-                else:
-                    assert(id[idx] <= 40), "shape ID is not valid, supposed to be in [0,40]"
-            return idx_list
-        elif dataset_name == 'shrec':
-            mapping_dict = {
-                0: 0, 2: 0, 4: 0, 5: 0, 10: 0, 11: 0, 12: 0, 14: 0, 17: 0, 18: 0, 19: 0, 20: 0, 26: 0, 30: 0, 34: 0, 41: 0, 42: 0, 43: 0,
-                7: 1, 15: 1, 16: 1, 21: 1, 22: 1, 23: 1, 28: 1,
-                25: 2, 33: 2, 37: 2,
-                3: 3, 6: 3, 8: 3, 40: 3,
-                1: 4, 13: 4, 32: 4, 36: 4,
-                9: 5, 24: 5, 27: 5, 29: 5, 31: 5, 35: 5, 38: 5, 39: 5
-            }
-            idx_list = torch.zeros((id.shape), dtype=torch.long)
-            for idx in range(id.shape[0]):
-                assert(id[idx] <= 43), "shape ID is not valid, supposed to be in [0,43]"
-                idx_list[idx] = mapping_dict[int(id[idx])]
-            return idx_list
 
     def normalize_data(self, batch_data):
         """ Normalize the batch data, use coordinates of the block centered at origin,
@@ -165,12 +142,13 @@ class ImplicitTemplatePointCorr(ShapeCorrTemplate):
             Return:
             BxNx3 array, rotated batch of point clouds
         """
+        ANGLE = torch.range(-1,6)*torch.pi/4
         rotated_data = torch.zeros(batch_data.shape, dtype=torch.float32).cuda()
         rotated_gt = torch.zeros((batch_data.shape[0]), dtype=torch.long).cuda()
         for k in range(batch_data.shape[0]):
             toss = torch.randint(8,(1,))
             #toss = 6
-            rotation_angle = self.ANGLE[toss]
+            rotation_angle = ANGLE[toss]
             #rotation_angle = bimodal.sample(1)
             #rotation_angle = torch.rand((1)) * 2 * np.pi
             cosval = torch.cos(rotation_angle)
@@ -230,41 +208,7 @@ class ImplicitTemplatePointCorr(ShapeCorrTemplate):
         # if  self.hparams.mode == 'train' or self.hparams.mode == 'val':
         #     #src_pos_student,rotated_src_student= self.rotate_point_cloud_by_angle(source["pos"])
         #     target["pos"],rotated_gt_student = self.rotate_point_cloud_by_angle(target["pos"])
-        template = {}
-        src_ae_embed, src_dec_pc = self.autoencoder(source["pos"])
-        tgt_ae_embed, tgt_dec_pc = self.autoencoder(target["pos"])
-        
-        source["ae_pos"] = src_dec_pc
-        target["ae_pos"] = tgt_dec_pc
-        
-        src_idx = self.id2idx(source['id'], self.hparams.dataset_name)
-        tgt_idx = self.id2idx(target['id'], self.hparams.dataset_name)
-        
-
-        
-        # ! Bug: Trying to backward through the graph a second time (or directly access saved tensors after they have already been freed). Saved intermediate values of the graph are freed when you call .backward() or autograd.grad(). Specify retain_graph=True if you need to backward through the graph a second time or if you need to access saved tensors after calling backward.
-        self.template_embed[src_idx] = (torch.mul(self.template_embed.detach()[src_idx], self.accumulate_count[src_idx].unsqueeze(1))+ src_ae_embed)/(self.accumulate_count[src_idx].unsqueeze(1)+1)
-        self.template_embed[tgt_idx] = (torch.mul(self.template_embed.detach()[tgt_idx], self.accumulate_count[tgt_idx].unsqueeze(1))+ tgt_ae_embed)/(self.accumulate_count[tgt_idx].unsqueeze(1)+1)
-        self.accumulate_count[src_idx] += 1
-        self.accumulate_count[tgt_idx] += 1
-        
-        _, template["pos"] = self.autoencoder(None, self.template_embed)  #template_shape = [1, 1024, 3]
-
-        if self.hparams.batch_idx==0:
-            templa = template["pos"].detach().cpu().numpy()
-            np.save("./Template_visualization/input/SixTemplate-shrec-traintemp/epoch_{}".format(self.current_epoch), templa)
-        
-        template["pos"] = template["pos"].detach()[src_idx]
-
-    
-        # * Compute template neigh idxs same as src and target before
-        template["edge_index"], template["neigh_idxs"] = self.edge_neibor_compute(template["pos"])
-        
-        template_out, template_inter = self.encoder(
-            template["pos"].transpose(0,1),  
-            src_xyz = template["pos"],
-            src_neigh = template["neigh_idxs"],
-        )
+ 
         
         src_out, src_inter = self.encoder(
             source["pos"].transpose(0,1),  
@@ -278,29 +222,77 @@ class ImplicitTemplatePointCorr(ShapeCorrTemplate):
             src_neigh = target["neigh_idxs"],
         )
         
-        template["dense_output_features"] = template_out.transpose(1,2)   #template["dense_output_features"] = [B, N, C]
         source["dense_output_features"] = src_out.transpose(1,2)
         target["dense_output_features"] = tgt_out.transpose(1,2)
-        
-        template["inter_features"] = template_inter  #template["inter_features"] = [[B,C1,N], [B,C2,N], [B,C3,N], [B,C4,N]]
         source["inter_features"] = src_inter
         target["inter_features"] = tgt_inter
+        
 
-        return source, target, template
+
+        return source, target
 
     def forward_source_target(self, source, target):
         
         ###transformers     
-        source, target, template = self.compute_self_features(source, target)
+        source, target = self.compute_self_features(source, target)
         ###
+
+        template={}
+        # 计算平均值池化
+        temp_mean_pool = torch.mean(self.global_mlp(self.template_embed.transpose(1,2)), dim=2)  # 在第 2 维度 N 上求平均
+
+        # 计算最大值池化
+        temp_max_pool, _ = torch.max(self.global_mlp(self.template_embed.transpose(1,2)), dim=2)  # 在第 2 维度 N 上求最大值
+
+        # 将平均值和最大值池化结果按列拼接
+        template_global = torch.cat((temp_mean_pool, temp_max_pool), dim=1)  # 在第 2 维度上拼接
+        
+        template["div_loss"] = self.get_diversity_loss(template_global)
+
+        
+        src_mean_pool = torch.mean(self.global_mlp(source["dense_output_features"].transpose(1,2)), dim=2)
+        src_max_pool, _ = torch.max(self.global_mlp(source["dense_output_features"].transpose(1,2)), dim=2)
+        src_global = torch.cat((src_mean_pool, src_max_pool), dim=1)
+        
+        tgt_mean_pool = torch.mean(self.global_mlp(target["dense_output_features"].transpose(1,2)), dim=2)
+        tgt_max_pool, _ = torch.max(self.global_mlp(target["dense_output_features"].transpose(1,2)), dim=2)
+        tgt_global = torch.cat((tgt_mean_pool, tgt_max_pool), dim=1)
+        
+
+        similarity = torch.zeros((source["pos"].shape[0],self.hparams.num_template)).cuda()
+        if "embed" in self.hparams.simi_metric:
+            temp_src_similarity = self.cosine_similarity(src_global, template_global)
+            temp_tgt_similarity = self.cosine_similarity(tgt_global, template_global)
+            similarity += temp_src_similarity+temp_tgt_similarity
+        
+        if "pos" in self.hparams.simi_metric:
+            pos_similarity = torch.zeros((source["pos"].shape[0],self.hparams.num_template)).cuda()
+            for i in range(source["pos"].shape[0]):
+                for j in range(self.hparams.num_template):
+                    pos_similarity[i,j] = self.chamfer_loss(source["pos"][i].unsqueeze(0), self.template_pos[j].unsqueeze(0)) + self.chamfer_loss(target["pos"][i].unsqueeze(0), self.template_pos[j].unsqueeze(0))
+            similarity += pos_similarity
+        
+        # 使用 Gumbel-Softmax 从相似性矩阵中采样硬向量
+        temperature = len(self.hparams.simi_metric)
+        logits = similarity / temperature
+        gumbel_softmax_sample = F.gumbel_softmax(logits, tau=1, hard=True) # gumbel_softmax_sample = [B, K]   self.template_embed = [K, N, C]
+
+        selected_temp_embed = torch.mm(gumbel_softmax_sample,self.template_embed.reshape(self.hparams.num_template,-1)).reshape(gumbel_softmax_sample.shape[0], 1024, -1) #selected_temp_embed = [4, 1024, 512]
+        selected_temp_pos = torch.mm(gumbel_softmax_sample,self.template_pos.reshape(self.hparams.num_template,-1)).reshape(gumbel_softmax_sample.shape[0], 1024, -1)  #selected_temp_pos = [4, 1024, 3]
+        
+        template["selected_temp_embed"] = selected_temp_embed
+        template["selected_temp_pos"] = selected_temp_pos
+        
+        # * Compute template neigh idxs same as src and target before
+        template["edge_index"], template["neigh_idxs"] = self.edge_neibor_compute(template["selected_temp_pos"])
 
         # measure cross similarity
         P_non_normalized = switch_functions.measure_similarity(self.hparams.similarity_init, source["dense_output_features"], target["dense_output_features"])
-        P_st_non_normalized = switch_functions.measure_similarity(self.hparams.similarity_init, source["dense_output_features"], template["dense_output_features"])
-        P_tt_non_normalized = switch_functions.measure_similarity(self.hparams.similarity_init, target["dense_output_features"], template["dense_output_features"])
-        
+        P_st_non_normalized = switch_functions.measure_similarity(self.hparams.similarity_init, source["dense_output_features"], template["selected_temp_embed"])
+        P_tt_non_normalized = switch_functions.measure_similarity(self.hparams.similarity_init, target["dense_output_features"], template["selected_temp_embed"])
+
         temperature = None
-        
+
         P_normalized = P_non_normalized
         P_st_normalized = P_st_non_normalized
         P_tt_normalized = P_tt_non_normalized
@@ -308,7 +300,7 @@ class ImplicitTemplatePointCorr(ShapeCorrTemplate):
         # cross nearest neighbors and weights
         source["cross_nn_weight"], source["cross_nn_sim"], source["cross_nn_idx"], target["cross_nn_weight"], target["cross_nn_sim"], target["cross_nn_idx"] =\
             get_s_t_neighbors(self.hparams.k_for_cross_recon, P_normalized, sim_normalization=self.hparams.sim_normalization)
-              
+
         if self.hparams.template_cross_lambda > 0.0:    
             source["t_cross_nn_weight"], source["t_cross_nn_sim"], source["t_cross_nn_idx"], template["s_cross_nn_weight"], template["s_cross_nn_sim"], template["s_cross_nn_idx"] =\
                 get_s_t_neighbors(self.hparams.k_for_cross_recon, P_st_normalized, sim_normalization=self.hparams.sim_normalization)
@@ -321,11 +313,22 @@ class ImplicitTemplatePointCorr(ShapeCorrTemplate):
         
         if self.hparams.template_cross_lambda > 0.0:
             source["t_cross_recon"], source["t_cross_recon_hard"] = self.reconstruction(source["pos"], template["s_cross_nn_idx"], template["s_cross_nn_weight"], self.hparams.k_for_cross_recon)
-            template["s_cross_recon"], template["s_cross_recon_hard"] = self.reconstruction(template["pos"], source["t_cross_nn_idx"], source["t_cross_nn_weight"], self.hparams.k_for_cross_recon)
+            template["s_cross_recon"], template["s_cross_recon_hard"] = self.reconstruction(template["selected_temp_pos"], source["t_cross_nn_idx"], source["t_cross_nn_weight"], self.hparams.k_for_cross_recon)
             target["t_cross_recon"], target["t_cross_recon_hard"] = self.reconstruction(target["pos"], template["t_cross_nn_idx"], template["t_cross_nn_weight"], self.hparams.k_for_cross_recon)
-            template["t_cross_recon"], template["t_cross_recon_hard"] = self.reconstruction(template["pos"], target["t_cross_nn_idx"], target["t_cross_nn_weight"], self.hparams.k_for_cross_recon)
+            template["t_cross_recon"], template["t_cross_recon_hard"] = self.reconstruction(template["selected_temp_pos"], target["t_cross_nn_idx"], target["t_cross_nn_weight"], self.hparams.k_for_cross_recon)
 
         return source, target, template, P_normalized, temperature
+    @staticmethod
+    def cosine_similarity(tensor1, tensor2):
+        # 假设 tensor1 是 (N, C) 维度的张量，tensor2 是 (M, C) 维度的张量
+
+        # 归一化输入张量，以确保其余弦相似性在 -1 到 1 之间
+        tensor1 = F.normalize(tensor1, p=2, dim=1)
+        tensor2 = F.normalize(tensor2, p=2, dim=1)
+
+        # 计算余弦相似性
+        similarity_matrix = torch.mm(tensor1, tensor2.t())  # 注意：.t() 用于转置 tensor2
+        return similarity_matrix
 
     @staticmethod
     def reconstruction(pos, nn_idx, nn_weight, k):
@@ -372,6 +375,26 @@ class ImplicitTemplatePointCorr(ShapeCorrTemplate):
         return perm_loss
 
     @staticmethod
+    def get_diversity_loss(embed):
+        """
+        Computes the diversity loss of global embeddings.
+        """
+        """
+        Args:
+            embed: embed of shape (n_patches, C)
+        """
+        # 使用 itertools.combinations 生成所有 8 个张量的两两组合
+        combinations = list(itertools.combinations(embed, 2))
+        loss = 0
+        # 计算每个组合的余弦相似性并将其添加到损失中
+        for pair in combinations:
+            tensor1, tensor2 = pair
+            cosine_similarity = F.cosine_similarity(tensor1, tensor2, dim=0)
+            loss += torch.sum(cosine_similarity)
+            
+        return loss/len(combinations)
+
+    @staticmethod
     def get_neighbor_loss(source, source_neigh_idxs, target_cross_recon, k):
         # source.shape[1] is the number of points
 
@@ -414,21 +437,17 @@ class ImplicitTemplatePointCorr(ShapeCorrTemplate):
         #     np.save("./smal-val/target_{}".format(self.hparams.batch_idx), target_xyz)
         #     # np.save("./smal-test/label_{}".format(batch_idx), label_cpu)
         # ###
-
-        # * Template-related losses
-        #chamfer-loss for auto encoder
-        if self.hparams.ae_lambda > 0.0:
-            self.losses['ae_loss'] = self.hparams.ae_lambda*(self.chamfer_loss(data["source"]["pos"], data["source"]["ae_pos"])+self.chamfer_loss(data["target"]["pos"], data["target"]["ae_pos"]))
+        
         #template cross reconstruction loss
         if self.hparams.template_cross_lambda > 0.0:
-            self.losses["template_source_cross_recon_loss"] = self.hparams.template_cross_lambda * (self.chamfer_loss(data["source"]["pos"], data["source"]["t_cross_recon"])+self.chamfer_loss(data["template"]["pos"], data["template"]["s_cross_recon"]))
-            self.losses["template_target_cross_recon_loss"] =self.hparams.template_cross_lambda * (self.chamfer_loss(data["target"]["pos"], data["target"]["t_cross_recon"])+self.chamfer_loss(data["template"]["pos"], data["target"]["t_cross_recon"]))
-
+            self.losses["template_source_cross_recon_loss"] = self.hparams.template_cross_lambda * (self.chamfer_loss(data["source"]["pos"], data["source"]["t_cross_recon"])+self.chamfer_loss(data["template"]["selected_temp_pos"], data["template"]["s_cross_recon"]))
+            self.losses["template_target_cross_recon_loss"] =self.hparams.template_cross_lambda * (self.chamfer_loss(data["target"]["pos"], data["target"]["t_cross_recon"])+self.chamfer_loss(data["template"]["selected_temp_pos"], data["target"]["t_cross_recon"]))
+            
         #template mapping loss
         if self.hparams.template_neigh_lambda > 0.0:
             pass
-        
-        # * Template-related losses
+        #template diversity loss
+        self.losses["template_diversity_loss"] = self.hparams.template_div_lambda*data["template"]["div_loss"]
         
         # cross reconstruction losses
         self.losses[f"source_cross_recon_loss"] = self.hparams.cross_recon_lambda * self.chamfer_loss(data["source"]["pos"], data["source"]["cross_recon"])
@@ -584,9 +603,11 @@ class ImplicitTemplatePointCorr(ShapeCorrTemplate):
 
         '''
         Template-related args
+        
         '''
-        parser.add_argument("--ae_d_embed", type=int, default=512, help="auto encoder embedding dim")
-        parser.add_argument("--ae_lambda", type=float, default=1.0, help="weight for auto encoder loss")
+        parser.add_argument("--num_template", type=int, default=8,)
+        parser.add_argument("--simi_metric", action='append', default=[], help="encoder layer list")
+        parser.add_argument("--template_div_lambda", type=float, default=0.2, help="weight for template global feature diversity loss")
         parser.add_argument("--template_cross_lambda", type=float, default=1.0, help="weight for cross reconstruction loss between template and source/target")
         parser.add_argument("--template_neigh_lambda", type=float, default=1.0, help="weight for neighbor smoothness loss between template and source/target")
         
