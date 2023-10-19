@@ -4,7 +4,7 @@ from data.point_cloud_db.point_cloud_dataset import PointCloudDataset
 from models.sub_models.dgcnn.dgcnn_modular import DGCNN_MODULAR
 from models.sub_models.dgcnn.dgcnn import get_graph_feature
 
-from models.sub_models.cross_attention.transformers import FlexibleTransformerEncoder, LuckTransformerEncoder, TemplateTransformerEncoder
+from models.sub_models.cross_attention.transformers import FlexibleTransformerEncoder, LuckTransformerEncoder, TemplateTransformerEncoder, SimilarityEncoder
 from models.sub_models.cross_attention.transformers import TransformerSelfLayer, TransformerCrossLayer, LuckSelfLayer
 from models.sub_models.cross_attention.position_embedding import PositionEmbeddingCoordsSine, \
     PositionEmbeddingLearned
@@ -64,6 +64,12 @@ class TemplatePointCorr(ShapeCorrTemplate):
         self.encoder_norm = nn.LayerNorm(self.hparams.d_embed) if self.hparams.pre_norm else None
         
         self.encoder = TemplateTransformerEncoder(hparams, self.hparams.layer_list, self.encoder_norm, True)
+        
+        if self.hparams.p_aug:
+            self.SimilarityEncoder = SimilarityEncoder(hparams, "ss", norm = self.encoder_norm, return_intermediate = True)
+            self.mlp_head = nn.Sequential(
+                    nn.Conv1d(self.hparams.d_embed*2, self.hparams.d_embed*2, kernel_size=1, bias=False), nn.BatchNorm1d(self.hparams.d_embed*2), nn.LeakyReLU(negative_slope=0.2),
+                )
         
         self.autoencoder = PointCloudAE(self.hparams.ae_d_embed, 1024)
         self.accumulate_count = torch.zeros((6), dtype=torch.long).cuda()
@@ -251,8 +257,7 @@ class TemplatePointCorr(ShapeCorrTemplate):
         _, template["pos"] = self.autoencoder(None, self.template_embed)  #template_shape = [1, 1024, 3]
 
         if self.hparams.batch_idx==0:
-            templa = template["pos"].detach().cpu().numpy()
-            np.save("./Template_visualization/input/SixTemplate-shrec-traintemp/epoch_{}".format(self.current_epoch), templa)
+            np.save("./Template_visualization/input/SimTemplate-tosca-full-mapping/epoch_{}".format(self.current_epoch), template["pos"].detach().cpu().numpy())
         
         template["pos"] = template["pos"].detach()[src_idx]
 
@@ -325,7 +330,18 @@ class TemplatePointCorr(ShapeCorrTemplate):
             target["t_cross_recon"], target["t_cross_recon_hard"] = self.reconstruction(target["pos"], template["t_cross_nn_idx"], template["t_cross_nn_weight"], self.hparams.k_for_cross_recon)
             template["t_cross_recon"], template["t_cross_recon_hard"] = self.reconstruction(template["pos"], target["t_cross_nn_idx"], target["t_cross_nn_weight"], self.hparams.k_for_cross_recon)
 
-        return source, target, template, P_normalized, temperature
+        if self.hparams.p_aug:
+            src_attn =  P_st_normalized  # src_attn = [B, 1024, 1024]
+            tgt_attn =  P_tt_normalized
+            src_aia_out, _ = self.SimilarityEncoder(src_attn)
+            tgt_aia_out, _ = self.SimilarityEncoder(tgt_attn)
+            src_embed = self.mlp_head(torch.concat((source["dense_output_features"].transpose(1,2), src_aia_out.transpose(0,2)), dim=1))  # input [B, C, N]  output [B, C, N]
+            tgt_embed = self.mlp_head(torch.concat((target["dense_output_features"].transpose(1,2), tgt_aia_out.transpose(0,2)), dim=1))
+            P_final = switch_functions.measure_similarity(self.hparams.similarity_init, src_embed.transpose(1,2), tgt_embed.transpose(1,2)) # input [B, N, C] 
+        else:
+            P_final = P_normalized
+
+        return source, target, template, P_final, temperature
 
     @staticmethod
     def reconstruction(pos, nn_idx, nn_weight, k):
@@ -422,12 +438,12 @@ class TemplatePointCorr(ShapeCorrTemplate):
         #template cross reconstruction loss
         if self.hparams.template_cross_lambda > 0.0:
             self.losses["template_source_cross_recon_loss"] = self.hparams.template_cross_lambda * (self.chamfer_loss(data["source"]["pos"], data["source"]["t_cross_recon"])+self.chamfer_loss(data["template"]["pos"], data["template"]["s_cross_recon"]))
-            self.losses["template_target_cross_recon_loss"] =self.hparams.template_cross_lambda * (self.chamfer_loss(data["target"]["pos"], data["target"]["t_cross_recon"])+self.chamfer_loss(data["template"]["pos"], data["target"]["t_cross_recon"]))
+            self.losses["template_target_cross_recon_loss"] =self.hparams.template_cross_lambda * (self.chamfer_loss(data["target"]["pos"], data["target"]["t_cross_recon"])+self.chamfer_loss(data["template"]["pos"], data["template"]["t_cross_recon"]))
 
         #template mapping loss
         if self.hparams.template_neigh_lambda > 0.0:
-            pass
-        
+            self.losses["template_source_neigh_loss"] = self.hparams.template_neigh_lambda*(self.get_neighbor_loss(data["template"]["pos"], data["template"]["neigh_idxs"], data["source"]["t_cross_recon"], self.hparams.k_for_cross_recon)+ self.get_neighbor_loss(data["source"]["pos"], data["source"]["neigh_idxs"], data["template"]["s_cross_recon"], self.hparams.k_for_cross_recon))
+            self.losses["template_target_neigh_loss"] = self.hparams.template_neigh_lambda*(self.get_neighbor_loss(data["template"]["pos"], data["template"]["neigh_idxs"], data["target"]["t_cross_recon"], self.hparams.k_for_cross_recon)+ self.get_neighbor_loss(data["target"]["pos"], data["target"]["neigh_idxs"], data["template"]["t_cross_recon"], self.hparams.k_for_cross_recon))
         # * Template-related losses
         
         # cross reconstruction losses
@@ -589,6 +605,7 @@ class TemplatePointCorr(ShapeCorrTemplate):
         parser.add_argument("--ae_lambda", type=float, default=1.0, help="weight for auto encoder loss")
         parser.add_argument("--template_cross_lambda", type=float, default=1.0, help="weight for cross reconstruction loss between template and source/target")
         parser.add_argument("--template_neigh_lambda", type=float, default=1.0, help="weight for neighbor smoothness loss between template and source/target")
+        parser.add_argument("--p_aug", nargs="?", default=False, type=str2bool, const=True, help="whether to use template to optimize similarity matrix between source and target")
         
         parser.set_defaults(
             optimizer="adam",
