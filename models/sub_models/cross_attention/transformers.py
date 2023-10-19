@@ -988,6 +988,100 @@ class TemplateSelfLayer(nn.Module):
 
         return src.permute(2,0,1)
 
+class SimilarityEncoder(nn.Module):
+    
+    def __init__(self, hparams, layer_list="ss", norm=None, return_intermediate=False):
+        super().__init__()
+        self.hparams = hparams
+        self.num_neighs = hparams.num_neighs
+        self.latent_dim = hparams.d_feedforward
+        self.input_features = 1024
+        self.bb_size = self.hparams.bb_size
+        
+        self.layers = nn.ModuleList([])
+        self.num_layers = len(layer_list)
+        self.layer_list = layer_list
+        self.norm = norm
+        self.return_intermediate = return_intermediate
+        self.premlp = nn.Sequential(
+                nn.Conv1d(self.input_features, 512, kernel_size=1, bias=False), nn.BatchNorm1d(512), nn.LeakyReLU(negative_slope=0.2),
+            )
+
+        for i in range(self.num_layers):
+            in_features =  512*(i+1)
+            if self.layer_list[i] == 's':
+                self.layers.append(TemplateSelfLayer(
+                in_features, self.hparams.nhead, self.hparams.d_feedforward, self.hparams.dropout,
+                activation=self.hparams.transformer_act,
+                normalize_before=self.hparams.pre_norm,
+                sa_val_has_pos_emb=self.hparams.sa_val_has_pos_emb,
+                ca_val_has_pos_emb=self.hparams.ca_val_has_pos_emb,
+                ))
+            else: 
+                assert(self.layer_list[i] in ["s"]), "Please set layer_list only with 's' representing 'self_attention_layer'"
+            
+        last_in_dim = 512*(self.num_layers+1)
+        self.mlp = nn.Sequential(
+                nn.Conv1d(last_in_dim, self.latent_dim, kernel_size=1, bias=False), nn.BatchNorm1d(self.latent_dim), nn.LeakyReLU(negative_slope=0.2),
+            )
+
+    def compute_neibor_mask(self, neigh):
+        with torch.no_grad():
+            B, N, _ = neigh.shape
+            mask = torch.full((B,N,N), True).to(neigh.device)
+            mask.scatter_(2, neigh.long(), False)
+        return mask
+    
+    def forward(self, src,
+                src_mask: Optional[Tensor] = None,
+                src_key_padding_mask: Optional[Tensor] = None,
+                src_xyz: Optional[Tensor] = None, 
+                src_neigh: Optional[Tensor] = None,):
+        
+        src_intermediate = []
+
+        src = self.premlp(src.permute(1,2,0)).permute(2,0,1)
+        
+        for idx, layer in enumerate(self.layers):
+            src_out = layer(src, src_mask=None, 
+                             src_key_padding_mask=src_key_padding_mask,
+                             src_pos=None)
+            
+            #print(tgt_out.shape)
+            src = torch.cat((src, src_out), dim=2)
+            
+            if self.return_intermediate:
+                src_intermediate.append(src_out.permute(1,2,0))
+    
+        src = self.mlp(torch.cat(src_intermediate, dim=1))
+        
+        if self.return_intermediate:
+            return src, src_intermediate
+        
+        return src
+
+    def get_attentions(self):
+        """For analysis: Retrieves the attention maps last computed by the individual layers."""
+
+        src_satt_all, tgt_satt_all = [], []
+        src_xatt_all, tgt_xatt_all = [], []
+
+        for layer in self.layers:
+            src_satt, tgt_satt = layer.satt_weights
+            src_xatt, tgt_xatt = layer.xatt_weights
+
+            src_satt_all.append(src_satt)
+            tgt_satt_all.append(tgt_satt)
+            src_xatt_all.append(src_xatt)
+            tgt_xatt_all.append(tgt_xatt)
+
+        src_satt_all = torch.stack(src_satt_all)
+        tgt_satt_all = torch.stack(tgt_satt_all)
+        src_xatt_all = torch.stack(src_xatt_all)
+        tgt_xatt_all = torch.stack(tgt_xatt_all)
+
+        return (src_satt_all, tgt_satt_all), (src_xatt_all, tgt_xatt_all)
+
 class LuckTransformerEncoder_select_mask(nn.Module):
     
     def __init__(self, hparams, layer_list, norm=None, return_intermediate=False):
