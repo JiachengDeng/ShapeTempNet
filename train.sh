@@ -1,4 +1,4 @@
-CUDA_VISIBLE_DEVICES=9 python train_point_corr.py \
+CUDA_VISIBLE_DEVICES=0 python train_point_corr.py \
 --dataset_name tosca \
 --train_batch_size 4 \
 --do_train true \
@@ -14,7 +14,7 @@ CUDA_VISIBLE_DEVICES=9 python train_point_corr.py \
 --test_on_tosca true \
 --max_epochs 600 \
 --template_neigh_lambda 0.0 \
-# --template_cross_lambda 0.0 \
+--template_cross_lambda 0.0 \
 # --p_aug \
 # --simi_metric embed \
 # --template_div_lambda 0.0 \
