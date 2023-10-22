@@ -10,7 +10,7 @@ from models.sub_models.cross_attention.position_embedding import PositionEmbeddi
     PositionEmbeddingLearned
 from models.sub_models.cross_attention.warmup import WarmUpScheduler
 
-from models.sub_models.autoencoder.auto_encoder import PointCloudAE
+from models.sub_models.autoencoder.auto_encoder import PointCloudAE, PointCloudDecoder
 
 
 import numpy as np
@@ -90,7 +90,7 @@ class ImplicitTemplatePointCorr(ShapeCorrTemplate):
             # 初始化Temp
             self.template_pos = nn.Parameter(torch.stack(source_tensors, dim=0))
         else:
-            self.template_pos = nn.Parameter(torch.zeros((self.hparams.num_template, 1024, 3)))
+            self.template_pos = nn.Parameter(torch.zeros((self.hparams.num_template, self.hparams.num_points, 3)))
             nn.init.trunc_normal_(
                 self.template_pos, mean=0, std=1, a=-1, b=1
             )
@@ -99,13 +99,16 @@ class ImplicitTemplatePointCorr(ShapeCorrTemplate):
                 self.all_shapeids = []
                 self.all_tempids = []
             
-        self.template_embed = nn.Parameter(torch.zeros((self.hparams.num_template, 1024, self.hparams.d_embed)))
+        self.template_embed = nn.Parameter(torch.zeros((self.hparams.num_template, self.hparams.num_points, self.hparams.d_embed)))
         nn.init.trunc_normal_(
             self.template_embed, mean=0, std=0.01, a=-1, b=1
         )
         self.global_mlp = nn.Sequential(
                 nn.Conv1d(self.hparams.d_embed, self.hparams.d_embed, kernel_size=1, bias=False), nn.BatchNorm1d(self.hparams.d_embed), nn.LeakyReLU(negative_slope=0.2),
             )
+        
+        if self.hparams.ae_lambda > 0.0:
+            self.ae_decoder = PointCloudDecoder(self.hparams.d_embed*2, self.hparams.num_points)
         
         self.chamfer_dist_3d = dist_chamfer_3D.chamfer_3DDist()
 
@@ -319,8 +322,8 @@ class ImplicitTemplatePointCorr(ShapeCorrTemplate):
             self.all_tempids.append(torch.argmax(gumbel_softmax_sample, dim=1).detach().cpu().numpy())
 
 
-        selected_temp_embed = torch.mm(gumbel_softmax_sample,self.template_embed.reshape(self.hparams.num_template,-1)).reshape(gumbel_softmax_sample.shape[0], 1024, -1) #selected_temp_embed = [4, 1024, 512]
-        selected_temp_pos = torch.mm(gumbel_softmax_sample,self.template_pos.reshape(self.hparams.num_template,-1)).reshape(gumbel_softmax_sample.shape[0], 1024, -1)  #selected_temp_pos = [4, 1024, 3]
+        selected_temp_embed = torch.mm(gumbel_softmax_sample,self.template_embed.reshape(self.hparams.num_template,-1)).reshape(gumbel_softmax_sample.shape[0], self.hparams.num_points, -1) #selected_temp_embed = [4, 1024, 512]
+        selected_temp_pos = torch.mm(gumbel_softmax_sample,self.template_pos.reshape(self.hparams.num_template,-1)).reshape(gumbel_softmax_sample.shape[0], self.hparams.num_points, -1)  #selected_temp_pos = [4, 1024, 3]
         
         if self.hparams.batch_idx==0 and self.hparams.save_embedpos:
             target_folder = os.path.join(self.hparams.log_to_dir, "ImTemplate-tosca")
@@ -331,6 +334,12 @@ class ImplicitTemplatePointCorr(ShapeCorrTemplate):
         
         template["selected_temp_embed"] = selected_temp_embed
         template["selected_temp_pos"] = selected_temp_pos
+        
+        if self.hparams.ae_lambda > 0.0:
+            source["ae_pos"] = self.ae_decoder(src_global)
+            target["ae_pos"] = self.ae_decoder(tgt_global)
+            with torch.no_grad():
+                template["ae_pos"] = self.ae_decoder(template_global)
         
         # * Compute template neigh idxs same as src and target before
         template["edge_index"], template["neigh_idxs"] = self.edge_neibor_compute(template["selected_temp_pos"])
@@ -487,10 +496,14 @@ class ImplicitTemplatePointCorr(ShapeCorrTemplate):
         #     # np.save("./smal-test/label_{}".format(batch_idx), label_cpu)
         # ###
         
+        #chamfer-loss for auto encoder
+        if self.hparams.ae_lambda > 0.0:
+            self.losses['ae_loss'] = self.hparams.ae_lambda*(self.chamfer_loss(data["source"]["pos"], data["source"]["ae_pos"])+self.chamfer_loss(data["target"]["pos"], data["target"]["ae_pos"])+self.chamfer_loss(self.template_pos, data["template"]["ae_pos"]))
+        
         #template cross reconstruction loss
         if self.hparams.template_cross_lambda > 0.0:
-            self.losses["template_source_cross_recon_loss"] = self.hparams.template_cross_lambda * (self.chamfer_loss(data["source"]["pos"], data["source"]["t_cross_recon"])+self.chamfer_loss(data["template"]["selected_temp_pos"], data["template"]["s_cross_recon"]))
-            self.losses["template_target_cross_recon_loss"] =self.hparams.template_cross_lambda * (self.chamfer_loss(data["target"]["pos"], data["target"]["t_cross_recon"])+self.chamfer_loss(data["template"]["selected_temp_pos"], data["target"]["t_cross_recon"]))
+            self.losses["template_source_cross_recon_loss"] = self.hparams.template_cross_lambda * (self.chamfer_loss(data["template"]["selected_temp_pos"], data["template"]["s_cross_recon"]))
+            self.losses["template_target_cross_recon_loss"] =self.hparams.template_cross_lambda * (self.chamfer_loss(data["template"]["selected_temp_pos"], data["template"]["t_cross_recon"]))
             
         #template mapping loss
         if self.hparams.template_neigh_lambda > 0.0:
@@ -656,6 +669,7 @@ class ImplicitTemplatePointCorr(ShapeCorrTemplate):
         '''
         parser.add_argument("--num_template", type=int, default=8,)
         parser.add_argument("--init_template", nargs="?", default=False, type=str2bool, const=True, help="whether to use shape point cloud to initialize template")
+        parser.add_argument("--ae_lambda", type=float, default=0.0, help="weight to use autoencoder decoder to constrain model training")
         parser.add_argument("--simi_metric", action='append', default=[], help="encoder layer list")
         parser.add_argument("--template_div_lambda", type=float, default=0.0, help="weight for template global feature diversity loss")
         parser.add_argument("--template_cross_lambda", type=float, default=1.0, help="weight for cross reconstruction loss between template and source/target")
