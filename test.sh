@@ -1,18 +1,19 @@
-CUDA_VISIBLE_DEVICES=0 python train_point_corr.py \
+CUDA_VISIBLE_DEVICES=9 python train_point_corr.py \
 --dataset_name tosca \
 --train_batch_size 4 \
 --do_train false \
 --optimizer adam \
---arch TemplatePointCorr \
+--arch ImplicitTemplatePointCorr \
 --ckpt_period 5 \
 --train_val_split 0.8 \
 --layer_list ssss \
 --steplr2 \
 --d_feedforward 512 \
---resume_from_checkpoint "/ssd/djc/PointCorrespondence/ShapeTempNet/output/shape_corr/TemplatePointCorr/arch_TemplatePointCorr/dataset_name_tosca/latent_dim_768/16_10:02:11:33/epoch=299.ckpt" \
+--resume_from_checkpoint "/ssd/djc/PointCorrespondence/ShapeTempNet/output/shape_corr/ImplicitTemplatePointCorr/arch_ImplicitTemplatePointCorr/dataset_name_tosca/latent_dim_768/22_10:20:44:09/epoch=249.ckpt" \
 --test_on_tosca \
---template_neigh_lambda 0.0
-# --simi_metric embed \
+--simi_metric pos \
+--simi_metric embed \
+# --template_neigh_lambda 0.0
 # --template_div_lambda 0.0 \
 # --matrix_post_process offline_ot \
 # --compute_perm_loss \
