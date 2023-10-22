@@ -16,6 +16,7 @@ from models.sub_models.autoencoder.auto_encoder import PointCloudAE
 import numpy as np
 
 import math
+import os
 
 from torch.optim.lr_scheduler import MultiStepLR, StepLR
 
@@ -67,12 +68,38 @@ class ImplicitTemplatePointCorr(ShapeCorrTemplate):
         
         self.encoder = TemplateTransformerEncoder(hparams, self.hparams.layer_list, self.encoder_norm, True)
         
+        if self.hparams.init_template:
+            # 存储文件名的列表
+            file_names = [
+                'source_0.npy',
+                'source_30.npy',
+                'source_110.npy',
+                'source_140.npy',
+                'source_176.npy',
+                'source_212.npy',
+                'source_224.npy',
+                'source_280.npy'
+            ]
 
-        self.template_pos = nn.Parameter(torch.zeros((self.hparams.num_template, 1024, 3)))
+            # 加载数据文件并将它们转换为PyTorch张量
+            source_tensors = []
+            for file_name in file_names:
+                source_data = np.load(os.path.join('data/init_template/tosca', file_name))
+                source_tensors.append(torch.from_numpy(source_data[0]))
+
+            # 初始化Temp
+            self.template_pos = nn.Parameter(torch.stack(source_tensors, dim=0))
+        else:
+            self.template_pos = nn.Parameter(torch.zeros((self.hparams.num_template, 1024, 3)))
+            nn.init.trunc_normal_(
+                self.template_pos, mean=0, std=1, a=-1, b=1
+            )
+            
+        if self.hparams.save_template_assignment:
+                self.all_shapeids = []
+                self.all_tempids = []
+            
         self.template_embed = nn.Parameter(torch.zeros((self.hparams.num_template, 1024, self.hparams.d_embed)))
-        nn.init.trunc_normal_(
-            self.template_pos, mean=0, std=1, a=-1, b=1
-        )
         nn.init.trunc_normal_(
             self.template_embed, mean=0, std=0.01, a=-1, b=1
         )
@@ -277,8 +304,30 @@ class ImplicitTemplatePointCorr(ShapeCorrTemplate):
         logits = similarity / temperature
         gumbel_softmax_sample = F.gumbel_softmax(logits, tau=1, hard=True) # gumbel_softmax_sample = [B, K]   self.template_embed = [K, N, C]
 
+        if self.hparams.save_template_assignment:    
+            target_folder = os.path.join(self.hparams.log_to_dir, "ImTemplate-assignment")
+            if not os.path.exists(target_folder):
+                os.makedirs(target_folder)
+            if self.hparams.batch_idx==0 and self.current_epoch!=0:
+                np.save(os.path.join(target_folder, "epoch_{}_shapeid".format(self.current_epoch-1)), np.concatenate(self.all_shapeids, axis=0))
+                np.save(os.path.join(target_folder, "epoch_{}_templateid".format(self.current_epoch-1)), np.concatenate(self.all_tempids, axis=0))
+                self.all_shapeids = []
+                self.all_tempids = []
+            self.all_shapeids.append(source["id"].detach().cpu().numpy())
+            self.all_tempids.append(torch.argmax(gumbel_softmax_sample, dim=1).detach().cpu().numpy())
+            self.all_shapeids.append(target["id"].detach().cpu().numpy())
+            self.all_tempids.append(torch.argmax(gumbel_softmax_sample, dim=1).detach().cpu().numpy())
+
+
         selected_temp_embed = torch.mm(gumbel_softmax_sample,self.template_embed.reshape(self.hparams.num_template,-1)).reshape(gumbel_softmax_sample.shape[0], 1024, -1) #selected_temp_embed = [4, 1024, 512]
         selected_temp_pos = torch.mm(gumbel_softmax_sample,self.template_pos.reshape(self.hparams.num_template,-1)).reshape(gumbel_softmax_sample.shape[0], 1024, -1)  #selected_temp_pos = [4, 1024, 3]
+        
+        if self.hparams.batch_idx==0 and self.hparams.save_embedpos:
+            target_folder = os.path.join(self.hparams.log_to_dir, "ImTemplate-tosca")
+            if not os.path.exists(target_folder):
+                os.makedirs(target_folder)
+            np.save(os.path.join(target_folder, f"epoch_{self.current_epoch}_pos"), self.template_pos.detach().cpu().numpy())
+            np.save(os.path.join(target_folder, f"epoch_{self.current_epoch}_embed"), self.template_embed.detach().cpu().numpy())
         
         template["selected_temp_embed"] = selected_temp_embed
         template["selected_temp_pos"] = selected_temp_pos
@@ -606,10 +655,14 @@ class ImplicitTemplatePointCorr(ShapeCorrTemplate):
         
         '''
         parser.add_argument("--num_template", type=int, default=8,)
+        parser.add_argument("--init_template", nargs="?", default=False, type=str2bool, const=True, help="whether to use shape point cloud to initialize template")
         parser.add_argument("--simi_metric", action='append', default=[], help="encoder layer list")
-        parser.add_argument("--template_div_lambda", type=float, default=0.2, help="weight for template global feature diversity loss")
+        parser.add_argument("--template_div_lambda", type=float, default=0.0, help="weight for template global feature diversity loss")
         parser.add_argument("--template_cross_lambda", type=float, default=1.0, help="weight for cross reconstruction loss between template and source/target")
-        parser.add_argument("--template_neigh_lambda", type=float, default=1.0, help="weight for neighbor smoothness loss between template and source/target")
+        parser.add_argument("--template_neigh_lambda", type=float, default=0.0, help="weight for neighbor smoothness loss between template and source/target")
+        
+        parser.add_argument("--save_embedpos", nargs="?", default=False, type=str2bool, const=True, help="whether to save embedding and pos of template")
+        parser.add_argument("--save_template_assignment", nargs="?", default=False, type=str2bool, const=True, help="whether to use shape point cloud to initialize template")
         
         parser.set_defaults(
             optimizer="adam",
