@@ -1,4 +1,4 @@
-CUDA_VISIBLE_DEVICES=7 python train_point_corr.py \
+CUDA_VISIBLE_DEVICES=8 python train_point_corr.py \
 --dataset_name tosca \
 --train_batch_size 4 \
 --do_train true \
@@ -18,7 +18,8 @@ CUDA_VISIBLE_DEVICES=7 python train_point_corr.py \
 --save_template_assignment \
 --save_embedpos \
 --init_template \
---ae_lambda 1.0 \
+--p_aug \
+# --ae_lambda 1.0 \
 #--template_div_lambda 0.0 \
 
 # --template_neigh_lambda 0.0 \
