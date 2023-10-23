@@ -336,8 +336,8 @@ class ImplicitTemplatePointCorr(ShapeCorrTemplate):
         template["selected_temp_pos"] = selected_temp_pos
         
         if self.hparams.ae_lambda > 0.0:
-            source["ae_pos"] = self.ae_decoder(src_global)
-            target["ae_pos"] = self.ae_decoder(tgt_global)
+            source["ae_pos"] = self.ae_decoder(src_global.detach())
+            target["ae_pos"] = self.ae_decoder(tgt_global.detach())
             with torch.no_grad():
                 template["ae_pos"] = self.ae_decoder(template_global)
         
