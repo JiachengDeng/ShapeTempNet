@@ -4,7 +4,7 @@ from data.point_cloud_db.point_cloud_dataset import PointCloudDataset
 from models.sub_models.dgcnn.dgcnn_modular import DGCNN_MODULAR
 from models.sub_models.dgcnn.dgcnn import get_graph_feature
 
-from models.sub_models.cross_attention.transformers import FlexibleTransformerEncoder, LuckTransformerEncoder, TemplateTransformerEncoder
+from models.sub_models.cross_attention.transformers import FlexibleTransformerEncoder, LuckTransformerEncoder, TemplateTransformerEncoder, SimilarityFusionEncoder
 from models.sub_models.cross_attention.transformers import TransformerSelfLayer, TransformerCrossLayer, LuckSelfLayer
 from models.sub_models.cross_attention.position_embedding import PositionEmbeddingCoordsSine, \
     PositionEmbeddingLearned
@@ -109,6 +109,9 @@ class ImplicitTemplatePointCorr(ShapeCorrTemplate):
         
         if self.hparams.ae_lambda > 0.0:
             self.ae_decoder = PointCloudDecoder(self.hparams.d_embed*2, self.hparams.num_points)
+        
+        if self.hparams.p_aug:
+            self.SimilarityFusionEncoder = SimilarityFusionEncoder(hparams, "ss", norm = self.encoder_norm, return_intermediate = True)
         
         self.chamfer_dist_3d = dist_chamfer_3D.chamfer_3DDist()
 
@@ -236,7 +239,7 @@ class ImplicitTemplatePointCorr(ShapeCorrTemplate):
         # target["pos"] = self.normalize_data(target["pos"])
 
         # if  self.hparams.mode == 'train' or self.hparams.mode == 'val':
-        #     #src_pos_student,rotated_src_student= self.rotate_point_cloud_by_angle(source["pos"])
+        #     src_pos_student,rotated_src_student= self.rotate_point_cloud_by_angle(source["pos"])
         #     target["pos"],rotated_gt_student = self.rotate_point_cloud_by_angle(target["pos"])
  
         
@@ -336,8 +339,8 @@ class ImplicitTemplatePointCorr(ShapeCorrTemplate):
         template["selected_temp_pos"] = selected_temp_pos
         
         if self.hparams.ae_lambda > 0.0:
-            source["ae_pos"] = self.ae_decoder(src_global.detach())
-            target["ae_pos"] = self.ae_decoder(tgt_global.detach())
+            source["ae_pos"] = self.ae_decoder(src_global)
+            target["ae_pos"] = self.ae_decoder(tgt_global)
             with torch.no_grad():
                 template["ae_pos"] = self.ae_decoder(template_global)
         
@@ -349,11 +352,31 @@ class ImplicitTemplatePointCorr(ShapeCorrTemplate):
         P_st_non_normalized = switch_functions.measure_similarity(self.hparams.similarity_init, source["dense_output_features"], template["selected_temp_embed"])
         P_tt_non_normalized = switch_functions.measure_similarity(self.hparams.similarity_init, target["dense_output_features"], template["selected_temp_embed"])
 
+
         temperature = None
 
         P_normalized = P_non_normalized
         P_st_normalized = P_st_non_normalized
         P_tt_normalized = P_tt_non_normalized
+
+        if self.hparams.p_aug:
+            # * fuse embedding and similairty matrix
+            source["fused_dense_output_features"] = self.SimilarityFusionEncoder(
+                source["dense_output_features"].transpose(1,2),  
+                src_xyz = source["pos"],
+                src_neigh = source["neigh_idxs"],
+                sim_matrix = P_st_normalized.transpose(1,2),
+            ).transpose(1,2)
+            
+            target["fused_dense_output_features"] = self.SimilarityFusionEncoder(
+                target["dense_output_features"].transpose(1,2),  
+                src_xyz = target["pos"],
+                src_neigh = target["neigh_idxs"],
+                sim_matrix = P_tt_normalized.transpose(1,2),
+            ).transpose(1,2)
+            
+            P_normalized = switch_functions.measure_similarity(self.hparams.similarity_init, source["fused_dense_output_features"], target["fused_dense_output_features"])
+
 
         # cross nearest neighbors and weights
         source["cross_nn_weight"], source["cross_nn_sim"], source["cross_nn_idx"], target["cross_nn_weight"], target["cross_nn_sim"], target["cross_nn_idx"] =\
@@ -670,6 +693,7 @@ class ImplicitTemplatePointCorr(ShapeCorrTemplate):
         parser.add_argument("--num_template", type=int, default=8,)
         parser.add_argument("--init_template", nargs="?", default=False, type=str2bool, const=True, help="whether to use shape point cloud to initialize template")
         parser.add_argument("--ae_lambda", type=float, default=0.0, help="weight to use autoencoder decoder to constrain model training")
+        parser.add_argument("--p_aug", nargs="?", default=False, type=str2bool, const=True, help="whether to use template to optimize similarity matrix between source and target")
         parser.add_argument("--simi_metric", action='append', default=[], help="encoder layer list")
         parser.add_argument("--template_div_lambda", type=float, default=0.0, help="weight for template global feature diversity loss")
         parser.add_argument("--template_cross_lambda", type=float, default=1.0, help="weight for cross reconstruction loss between template and source/target")
