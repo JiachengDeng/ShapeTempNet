@@ -70,7 +70,7 @@ class ImplicitTemplatePointCorr(ShapeCorrTemplate):
         
         if self.hparams.init_template:
             # 存储文件名的列表
-            file_names = [
+            tosca_file_names = [
                 'source_0.npy',
                 'source_30.npy',
                 'source_110.npy',
@@ -81,11 +81,27 @@ class ImplicitTemplatePointCorr(ShapeCorrTemplate):
                 'source_280.npy'
             ]
 
+            shrec_file_names = [
+                'source_4.npy',
+                'source_40.npy',
+                'source_93.npy',
+                'source_162.npy',
+                'source_187.npy',
+                'source_309.npy',
+                'source_377.npy',
+                'source_387.npy'
+            ]
+
             # 加载数据文件并将它们转换为PyTorch张量
             source_tensors = []
-            for file_name in file_names:
-                source_data = np.load(os.path.join('data/init_template/tosca', file_name))
-                source_tensors.append(torch.from_numpy(source_data[0]))
+            if self.hparams.dataset_name == "tosca" or self.hparams.dataset_name == "smal":
+                for file_name in tosca_file_names:
+                    source_data = np.load(os.path.join('data/init_template/tosca', file_name))
+                    source_tensors.append(torch.from_numpy(source_data[0]))
+            elif self.hparams.dataset_name == "shrec" or self.hparams.dataset_name == "surreal":
+                for file_name in shrec_file_names:
+                    source_data = np.load(os.path.join('data/init_template/shrec', file_name))
+                    source_tensors.append(torch.from_numpy(source_data[0]))                
 
             # 初始化Temp
             self.template_pos = nn.Parameter(torch.stack(source_tensors, dim=0))
