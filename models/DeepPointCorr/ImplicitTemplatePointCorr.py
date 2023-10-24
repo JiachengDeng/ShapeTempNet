@@ -375,25 +375,6 @@ class ImplicitTemplatePointCorr(ShapeCorrTemplate):
         P_st_normalized = P_st_non_normalized
         P_tt_normalized = P_tt_non_normalized
 
-        if self.hparams.p_aug:
-            # * fuse embedding and similairty matrix
-            source["fused_dense_output_features"] = self.SimilarityFusionEncoder(
-                source["dense_output_features"].transpose(1,2),  
-                src_xyz = source["pos"],
-                src_neigh = source["neigh_idxs"],
-                sim_matrix = P_st_normalized.transpose(1,2),
-            ).transpose(1,2)
-            
-            target["fused_dense_output_features"] = self.SimilarityFusionEncoder(
-                target["dense_output_features"].transpose(1,2),  
-                src_xyz = target["pos"],
-                src_neigh = target["neigh_idxs"],
-                sim_matrix = P_tt_normalized.transpose(1,2),
-            ).transpose(1,2)
-            
-            P_normalized = switch_functions.measure_similarity(self.hparams.similarity_init, source["fused_dense_output_features"], target["fused_dense_output_features"])
-
-
         # cross nearest neighbors and weights
         source["cross_nn_weight"], source["cross_nn_sim"], source["cross_nn_idx"], target["cross_nn_weight"], target["cross_nn_sim"], target["cross_nn_idx"] =\
             get_s_t_neighbors(self.hparams.k_for_cross_recon, P_normalized, sim_normalization=self.hparams.sim_normalization)
@@ -413,6 +394,61 @@ class ImplicitTemplatePointCorr(ShapeCorrTemplate):
             template["s_cross_recon"], template["s_cross_recon_hard"] = self.reconstruction(template["selected_temp_pos"], source["t_cross_nn_idx"], source["t_cross_nn_weight"], self.hparams.k_for_cross_recon)
             target["t_cross_recon"], target["t_cross_recon_hard"] = self.reconstruction(target["pos"], template["t_cross_nn_idx"], template["t_cross_nn_weight"], self.hparams.k_for_cross_recon)
             template["t_cross_recon"], template["t_cross_recon_hard"] = self.reconstruction(template["selected_temp_pos"], target["t_cross_nn_idx"], target["t_cross_nn_weight"], self.hparams.k_for_cross_recon)
+
+
+        if self.hparams.p_aug:
+            # * fuse embedding and similairty matrix
+            source["fused_dense_output_features"] = self.SimilarityFusionEncoder(
+                source["dense_output_features"].transpose(1,2),  
+                src_xyz = source["pos"],
+                src_neigh = source["neigh_idxs"],
+                sim_matrix = P_st_normalized.transpose(1,2),
+            ).transpose(1,2)
+            
+            target["fused_dense_output_features"] = self.SimilarityFusionEncoder(
+                target["dense_output_features"].transpose(1,2),  
+                src_xyz = target["pos"],
+                src_neigh = target["neigh_idxs"],
+                sim_matrix = P_tt_normalized.transpose(1,2),
+            ).transpose(1,2)
+            
+            template["fused_dense_output_features"] = self.SimilarityFusionEncoder(
+                template["selected_temp_embed"].transpose(1,2),  
+                src_xyz = template["selected_temp_pos"],
+                src_neigh = template["neigh_idxs"],
+                sim_matrix = 0.5*(P_st_normalized+P_tt_normalized),
+            ).transpose(1,2)
+
+            P_non_normalized = switch_functions.measure_similarity(self.hparams.similarity_init, source["fused_dense_output_features"], target["fused_dense_output_features"])
+            P_st_non_normalized = switch_functions.measure_similarity(self.hparams.similarity_init, source["fused_dense_output_features"], template["fused_dense_output_features"])
+            P_tt_non_normalized = switch_functions.measure_similarity(self.hparams.similarity_init, target["fused_dense_output_features"], template["fused_dense_output_features"])
+
+
+            temperature = None
+
+            P_normalized = P_non_normalized
+            P_st_normalized = P_st_non_normalized
+            P_tt_normalized = P_tt_non_normalized
+            
+            # cross nearest neighbors and weights
+            source["cross_nn_weight_aug"], source["cross_nn_sim_aug"], source["cross_nn_idx_aug"], target["cross_nn_weight_aug"], target["cross_nn_sim_aug"], target["cross_nn_idx_aug"] =\
+                get_s_t_neighbors(self.hparams.k_for_cross_recon, P_normalized, sim_normalization=self.hparams.sim_normalization)
+
+            if self.hparams.template_cross_lambda > 0.0:    
+                source["t_cross_nn_weight_aug"], source["t_cross_nn_sim_aug"], source["t_cross_nn_idx_aug"], template["s_cross_nn_weight_aug"], template["s_cross_nn_sim_aug"], template["s_cross_nn_idx_aug"] =\
+                    get_s_t_neighbors(self.hparams.k_for_cross_recon, P_st_normalized, sim_normalization=self.hparams.sim_normalization)
+                target["t_cross_nn_weight_aug"], target["t_cross_nn_sim_aug"], target["t_cross_nn_idx_aug"], template["t_cross_nn_weight_aug"], template["t_cross_nn_sim_aug"], template["t_cross_nn_idx_aug"] =\
+                    get_s_t_neighbors(self.hparams.k_for_cross_recon, P_tt_normalized, sim_normalization=self.hparams.sim_normalization)
+
+            # cross reconstruction
+            source["cross_recon_aug"], source["cross_recon_hard_aug"] = self.reconstruction(source["pos"], target["cross_nn_idx"], target["cross_nn_weight"], self.hparams.k_for_cross_recon)
+            target["cross_recon_aug"], target["cross_recon_hard_aug"] = self.reconstruction(target["pos"], source["cross_nn_idx"], source["cross_nn_weight"], self.hparams.k_for_cross_recon)
+            
+            if self.hparams.template_cross_lambda > 0.0:
+                source["t_cross_recon_aug"], source["t_cross_recon_hard_aug"] = self.reconstruction(source["pos"], template["s_cross_nn_idx_aug"], template["s_cross_nn_weight_aug"], self.hparams.k_for_cross_recon)
+                template["s_cross_recon_aug"], template["s_cross_recon_hard_aug"] = self.reconstruction(template["selected_temp_pos"], source["t_cross_nn_idx_aug"], source["t_cross_nn_weight_aug"], self.hparams.k_for_cross_recon)
+                target["t_cross_recon_aug"], target["t_cross_recon_hard_aug"] = self.reconstruction(target["pos"], template["t_cross_nn_idx_aug"], template["t_cross_nn_weight_aug"], self.hparams.k_for_cross_recon)
+                template["t_cross_recon_aug"], template["t_cross_recon_hard_aug"] = self.reconstruction(template["selected_temp_pos"], target["t_cross_nn_idx_aug"], target["t_cross_nn_weight_aug"], self.hparams.k_for_cross_recon)
 
         return source, target, template, P_normalized, temperature
     @staticmethod
@@ -543,6 +579,10 @@ class ImplicitTemplatePointCorr(ShapeCorrTemplate):
         if self.hparams.template_cross_lambda > 0.0:
             self.losses["template_source_cross_recon_loss"] = self.hparams.template_cross_lambda * (self.chamfer_loss(data["template"]["selected_temp_pos"], data["template"]["s_cross_recon"]))
             self.losses["template_target_cross_recon_loss"] =self.hparams.template_cross_lambda * (self.chamfer_loss(data["template"]["selected_temp_pos"], data["template"]["t_cross_recon"]))
+            
+        if self.hparams.p_aug and self.hparams.template_cross_lambda > 0.0:
+            self.losses["aug_template_source_cross_recon_loss"] = self.hparams.template_cross_lambda * (self.chamfer_loss(data["template"]["selected_temp_pos"], data["template"]["s_cross_recon_aug"]))
+            self.losses["aug_template_target_cross_recon_loss"] =self.hparams.template_cross_lambda * (self.chamfer_loss(data["template"]["selected_temp_pos"], data["template"]["t_cross_recon_aug"]))
             
         #template mapping loss
         if self.hparams.template_neigh_lambda > 0.0:
