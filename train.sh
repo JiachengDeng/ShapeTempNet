@@ -1,5 +1,5 @@
-CUDA_VISIBLE_DEVICES=8 python train_point_corr.py \
---dataset_name shrec \
+CUDA_VISIBLE_DEVICES=9 python train_point_corr.py \
+--dataset_name tosca \
 --train_batch_size 4 \
 --do_train true \
 --optimizer adam \
@@ -11,14 +11,14 @@ CUDA_VISIBLE_DEVICES=8 python train_point_corr.py \
 --layer_list ssss \
 --d_feedforward 512 \
 --steplr2 \
---test_on_shrec true \
+--test_on_tosca true \
 --max_epochs 600 \
 --simi_metric embed \
 --simi_metric pos \
 --save_template_assignment \
 --save_embedpos \
 --init_template \
-# --p_aug \
+--p_aug \
 # --ae_lambda 1.0 \
 #--template_div_lambda 0.0 \
 
