@@ -603,6 +603,9 @@ class ImplicitTemplatePointCorr(ShapeCorrTemplate):
             p = p * F.softmax(p/temp, dim=0)*len(p) #With an appropriate temperature parameter, the model achieves higher performance
             p = F.log_softmax(p, dim=-1)
 
+        if self.hparams.offline_ot: 
+            for i in range(p.shape[0]):
+                p[i],_ = compute_optimal_transport(-p[i])
 
         _ = self.compute_acc(label, ratio_list, soft_labels, p,input2,track_dict=self.tracks,hparams=self.hparams)
 
@@ -702,6 +705,8 @@ class ImplicitTemplatePointCorr(ShapeCorrTemplate):
         parser.add_argument("--save_embedpos", nargs="?", default=False, type=str2bool, const=True, help="whether to save embedding and pos of template")
         parser.add_argument("--save_template_assignment", nargs="?", default=False, type=str2bool, const=True, help="whether to use shape point cloud to initialize template")
         
+        parser.add_argument("--offline_ot", nargs="?", default=False, type=str2bool, const=True, help="whether to use optimal transport")
+        
         parser.set_defaults(
             optimizer="adam",
             lr=0.0003,
@@ -745,3 +750,31 @@ class ImplicitTemplatePointCorr(ShapeCorrTemplate):
         # uniqueness (number of unique predictions)
         self.tracks[f"uniqueness_fwd"] = uniqueness(source_pred)
         self.tracks[f"uniqueness_bac"] = uniqueness(target_pred)
+
+
+def compute_optimal_transport(M, r=torch.ones(1024).cuda(), c=torch.ones(1024).cuda(), lam=10, epsilon=1e-9):
+    """
+    Computes the optimal transport matrix and Slinkhorn distance using the
+    Sinkhorn-Knopp algorithm
+    Inputs:
+        - M : cost matrix (n x m)
+        - r : vector of marginals (n, )
+        - c : vector of marginals (m, )
+        - lam : strength of the entropic regularization
+        - epsilon : convergence parameter
+    Outputs:
+        - P : optimal transport matrix (n x m)
+        - dist : Sinkhorn distance
+    """
+    n, m = M.shape
+    P = torch.exp(- lam * M).cuda()
+    P /= P.sum()
+    u = torch.zeros(n).cuda()
+    iter = 0
+    # normalize this matrix
+    while (torch.max(torch.abs(u - P.sum(1))) > epsilon) and (iter<300):
+        u = P.sum(1)
+        P *= (r / u).reshape((-1, 1))#行归r化，注意python中*号含义
+        P *= (c / P.sum(0)).reshape((1, -1))#列归c化
+        iter += 1
+    return P, torch.sum(P * M)
