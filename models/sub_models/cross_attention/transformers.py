@@ -1233,6 +1233,51 @@ class SimilarityFusionEncoder(nn.Module):
         src = self.mlp(torch.cat(src_intermediate, dim=1))
         
         return src
+    
+class PointDecoder(nn.Module):
+    def __init__(self, hparams, layer_list):
+        super().__init__()
+        self.hparams = hparams
+        self.num_neighs = hparams.num_neighs
+        self.latent_dim = hparams.d_feedforward
+        
+        self.layers = nn.ModuleList([])
+        self.num_layers = len(layer_list)
+        self.layer_list = layer_list
+
+        for i in range(self.num_layers):
+            if self.layer_list[i] == 's':
+                self.layers.append(TemplateSelfLayer(
+                hparams.d_feedforward, self.hparams.nhead, self.hparams.d_feedforward, 0.2,
+                activation=self.hparams.transformer_act,
+                normalize_before=self.hparams.pre_norm,
+                sa_val_has_pos_emb=self.hparams.sa_val_has_pos_emb,
+                ca_val_has_pos_emb=self.hparams.ca_val_has_pos_emb,
+                ))
+            else: 
+                assert(self.layer_list[i] in ["s"]), "Please set layer_list only with 's' representing 'self_attention_layer'"
+        
+        self.mlp = nn.Sequential(
+                nn.Conv1d(self.latent_dim, 3, kernel_size=1, bias=True)
+            )
+    
+    def forward(self, src,
+                src_mask: Optional[Tensor] = None,
+                src_key_padding_mask: Optional[Tensor] = None,
+                ):
+        
+        for idx, layer in enumerate(self.layers):
+                
+            src_out = layer(src, src_mask=src_mask, 
+                             src_key_padding_mask=src_key_padding_mask,
+                             src_pos=None)
+            
+            #print(tgt_out.shape)
+            src = src+src_out
+    
+        src = self.mlp(src.permute(1,2,0))  # src = [N, B, C]  Input: [B, C, N]
+        
+        return src.transpose(1,2)
 
 class LuckTransformerEncoder_select_mask(nn.Module):
     

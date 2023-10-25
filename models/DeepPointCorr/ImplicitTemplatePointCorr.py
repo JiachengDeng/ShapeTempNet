@@ -4,7 +4,7 @@ from data.point_cloud_db.point_cloud_dataset import PointCloudDataset
 from models.sub_models.dgcnn.dgcnn_modular import DGCNN_MODULAR
 from models.sub_models.dgcnn.dgcnn import get_graph_feature
 
-from models.sub_models.cross_attention.transformers import FlexibleTransformerEncoder, LuckTransformerEncoder, TemplateTransformerEncoder, SimilarityFusionEncoder
+from models.sub_models.cross_attention.transformers import FlexibleTransformerEncoder, LuckTransformerEncoder, TemplateTransformerEncoder, SimilarityFusionEncoder, PointDecoder
 from models.sub_models.cross_attention.transformers import TransformerSelfLayer, TransformerCrossLayer, LuckSelfLayer
 from models.sub_models.cross_attention.position_embedding import PositionEmbeddingCoordsSine, \
     PositionEmbeddingLearned
@@ -124,7 +124,7 @@ class ImplicitTemplatePointCorr(ShapeCorrTemplate):
             )
         
         if self.hparams.ae_lambda > 0.0:
-            self.ae_decoder = PointCloudDecoder(self.hparams.d_embed*2, self.hparams.num_points)
+            self.ae_decoder = PointDecoder(hparams, "ss")
         
         if self.hparams.p_aug:
             self.SimilarityFusionEncoder = SimilarityFusionEncoder(hparams, "ss", norm = self.encoder_norm, return_intermediate = True)
@@ -355,10 +355,10 @@ class ImplicitTemplatePointCorr(ShapeCorrTemplate):
         template["selected_temp_pos"] = selected_temp_pos
         
         if self.hparams.ae_lambda > 0.0:
-            source["ae_pos"] = self.ae_decoder(src_global)
-            target["ae_pos"] = self.ae_decoder(tgt_global)
+            source["ae_pos"] = self.ae_decoder(source["dense_output_features"].detach().transpose(0,1))  # source["dense_output_features"] = [B, 1024, 512]  Input: [N, B, C] Output: [B, N, C]
+            target["ae_pos"] = self.ae_decoder(target["dense_output_features"].detach().transpose(0,1))
             with torch.no_grad():
-                template["ae_pos"] = self.ae_decoder(template_global)
+                template["ae_pos"] = self.ae_decoder(self.template_embed.transpose(0,1))   # template_global = [Template_num, 1024, 512]
         
         # * Compute template neigh idxs same as src and target before
         template["edge_index"], template["neigh_idxs"] = self.edge_neibor_compute(template["selected_temp_pos"])
@@ -537,7 +537,7 @@ class ImplicitTemplatePointCorr(ShapeCorrTemplate):
         
         #chamfer-loss for auto encoder
         if self.hparams.ae_lambda > 0.0:
-            self.losses['ae_loss'] = self.hparams.ae_lambda*(self.chamfer_loss(data["source"]["pos"], data["source"]["ae_pos"])+self.chamfer_loss(data["target"]["pos"], data["target"]["ae_pos"])+self.chamfer_loss(self.template_pos, data["template"]["ae_pos"]))
+            self.losses['ae_loss'] = self.hparams.ae_lambda*(self.chamfer_loss(data["source"]["pos"], data["source"]["ae_pos"])+self.chamfer_loss(data["target"]["pos"], data["target"]["ae_pos"])+self.chamfer_loss(self.template_pos.detach(), data["template"]["ae_pos"]))
         
         #template cross reconstruction loss
         if self.hparams.template_cross_lambda > 0.0:
