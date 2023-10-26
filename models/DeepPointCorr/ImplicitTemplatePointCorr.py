@@ -438,7 +438,10 @@ class ImplicitTemplatePointCorr(ShapeCorrTemplate):
         return recon, recon_hard
 
     def forward_shape(self, shape):
-        P_self = switch_functions.measure_similarity(self.hparams.similarity_init, shape["dense_output_features"], shape["dense_output_features"])
+        if self.hparams.p_aug:
+            P_self = switch_functions.measure_similarity(self.hparams.similarity_init, shape["fused_dense_output_features"], shape["fused_dense_output_features"])
+        else:
+            P_self = switch_functions.measure_similarity(self.hparams.similarity_init, shape["dense_output_features"], shape["dense_output_features"])
 
         # measure self similarity
         nn_idx = shape['neigh_idxs'][:,:,:self.hparams.k_for_self_recon + 1] if self.hparams.use_euclidiean_in_self_recon else None
