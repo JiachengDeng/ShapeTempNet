@@ -540,7 +540,9 @@ class ImplicitTemplatePointCorr(ShapeCorrTemplate):
         
         #chamfer-loss for auto encoder
         if self.hparams.ae_lambda > 0.0:
-            self.losses['ae_loss'] = self.hparams.ae_lambda*(self.chamfer_loss(data["source"]["pos"], data["source"]["ae_pos"])+self.chamfer_loss(data["target"]["pos"], data["target"]["ae_pos"])+self.chamfer_loss(self.template_pos.detach(), data["template"]["ae_pos"]))
+            self.losses['src_ae_loss'] = self.hparams.ae_lambda*(F.smooth_l1_loss(data["source"]["pos"], data["source"]["ae_pos"]))
+            self.losses['tgt_ae_loss'] = self.hparams.ae_lambda*(F.smooth_l1_loss(data["target"]["pos"], data["target"]["ae_pos"]))
+            self.losses['template_ae_loss'] = self.hparams.ae_lambda*(F.smooth_l1_loss(self.template_pos.detach(), data["template"]["ae_pos"]))
         
         #template cross reconstruction loss
         if self.hparams.template_cross_lambda > 0.0:
