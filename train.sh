@@ -1,4 +1,4 @@
-CUDA_VISIBLE_DEVICES=9 python train_point_corr.py \
+CUDA_VISIBLE_DEVICES=5 python train_point_corr.py \
 --dataset_name tosca \
 --train_batch_size 4 \
 --do_train true \
@@ -24,7 +24,7 @@ CUDA_VISIBLE_DEVICES=9 python train_point_corr.py \
 
 # --template_neigh_lambda 0.0 \
 # --template_cross_lambda 0.0 \
-# --p_aug \
+
 
 # --learnedmask \
 # --matrix_post_process ot \
