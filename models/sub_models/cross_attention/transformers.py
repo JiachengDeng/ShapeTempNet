@@ -17,6 +17,8 @@ import torch
 import torch.nn.functional as F
 from torch import nn, Tensor
 
+from utils import switch_functions
+
 
 class TransformerCrossEncoder(nn.Module):
 
@@ -1147,7 +1149,7 @@ class SemidropLayer(nn.Module):
         return src.permute(2,0,1)
     
 class SimilarityFusionEncoder(nn.Module):
-    def __init__(self, hparams, layer_list, norm=None, return_intermediate=False):
+    def __init__(self, hparams, layer_list,):
         super().__init__()
         self.hparams = hparams
         self.num_neighs = hparams.num_neighs
@@ -1156,23 +1158,18 @@ class SimilarityFusionEncoder(nn.Module):
         self.layers = nn.ModuleList([])
         self.num_layers = len(layer_list)
         self.layer_list = layer_list
-        self.norm = norm
-        self.return_intermediate = return_intermediate
-        self.pos_embed = nn.ModuleList([PositionEmbeddingCoordsSine(3, hparams.d_feedforward*(i+1), scale= 1.0) for i in range(self.num_layers)])
+        self.pos_embed = PositionEmbeddingCoordsSine(3, hparams.d_feedforward, scale= 1.0)
 
         self.premlp1 = nn.Sequential(
                 nn.Conv1d(hparams.d_feedforward, hparams.d_feedforward, kernel_size=1, bias=False), nn.BatchNorm1d(hparams.d_feedforward), nn.LeakyReLU(negative_slope=0.2),
             )
-        self.premlp2_1 = nn.Sequential(
+        self.premlp2 = nn.Sequential(
                 nn.Conv1d(2*hparams.d_feedforward, hparams.d_feedforward, kernel_size=1, bias=False), nn.BatchNorm1d(hparams.d_feedforward), nn.LeakyReLU(negative_slope=0.2),
-            )
-        self.premlp2_2 = nn.Sequential(
-                nn.Conv1d(2*hparams.d_feedforward, 2*hparams.d_feedforward, kernel_size=1, bias=False), nn.BatchNorm1d(2*hparams.d_feedforward), nn.LeakyReLU(negative_slope=0.2),
             )
 
         for i in range(self.num_layers):
             if self.layer_list[i] == 's':
-                in_features =  hparams.d_feedforward*(i+1)
+                in_features =  hparams.d_feedforward
                 self.layers.append(SemidropLayer(
                 in_features, self.hparams.nhead, self.hparams.d_feedforward, 0.2,
                 activation=self.hparams.transformer_act,
@@ -1200,14 +1197,15 @@ class SimilarityFusionEncoder(nn.Module):
                 src_key_padding_mask: Optional[Tensor] = None,
                 src_xyz: Optional[Tensor] = None, 
                 src_neigh: Optional[Tensor] = None,
-                sim_matrix: Optional[Tensor] = None):
+                template_embed: Optional[Tensor] = None):
         
-        src_intermediate = []
-
-        src = self.premlp1(src).permute(2,0,1)   # [B, C, N] ---> src  = [N, B, C]
-        sim_embed = [self.premlp2_1(sim_matrix).permute(2,0,1), self.premlp2_2(sim_matrix).permute(2,0,1)]   # [B, C, N] ---> sim_embed  = [N, B, C] 
+        src = src.permute(2,0,1)
         
         for idx, layer in enumerate(self.layers):
+            src = self.premlp1(src.permute(1,2,0)).permute(2,0,1) # src  = [N, B, C] ---> [B, C, N] ---> src  = [N, B, C]
+            
+            sim_matrix = switch_functions.measure_similarity(self.hparams.similarity_init, src.transpose(0,1), template_embed.transpose(1,2))
+            sim_embed = self.premlp2(sim_matrix).permute(2,0,1) # [B, C, N] ---> sim_embed  = [N, B, C] 
             
             src_mask = self.compute_neibor_mask(src_neigh)
             # mask must be tiled to num_heads of the transformer
@@ -1217,22 +1215,17 @@ class SimilarityFusionEncoder(nn.Module):
             src_mask = src_mask.repeat(1, nhead, 1, 1)
             src_mask = src_mask.view(bsz * nhead, n, n)
             
-            src_pos = self.pos_embed[idx](src_xyz.reshape(-1,3)).reshape(-1,src_mask.shape[1], self.latent_dim*(idx+1))
+            src_pos = self.pos_embed(src_xyz.reshape(-1,3)).reshape(-1,src_mask.shape[1], self.latent_dim)
                 
             src_out = layer(src, src_mask=src_mask, 
                              src_key_padding_mask=src_key_padding_mask,
                              src_pos=src_pos.transpose(0,1),
-                             sim_matrix = sim_embed[idx])
+                             sim_matrix = sim_embed)
             
             #print(tgt_out.shape)
-            src = torch.cat((src, src_out), dim=2)
-            
-            if self.return_intermediate:
-                src_intermediate.append(src_out.permute(1,2,0))
-    
-        src = self.mlp(torch.cat(src_intermediate, dim=1))
+            src = src + src_out
         
-        return src
+        return src.transpose(0,1)   #output = [B, N, C]
     
 class PointDecoder(nn.Module):
     def __init__(self, hparams, layer_list):

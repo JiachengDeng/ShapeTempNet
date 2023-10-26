@@ -127,7 +127,7 @@ class ImplicitTemplatePointCorr(ShapeCorrTemplate):
             self.ae_decoder = PointDecoder(hparams, "ss")
         
         if self.hparams.p_aug:
-            self.SimilarityFusionEncoder = SimilarityFusionEncoder(hparams, "ss", norm = self.encoder_norm, return_intermediate = True)
+            self.SimilarityFusionEncoder = SimilarityFusionEncoder(hparams, "ss")
         
         self.chamfer_dist_3d = dist_chamfer_3D.chamfer_3DDist()
 
@@ -381,15 +381,15 @@ class ImplicitTemplatePointCorr(ShapeCorrTemplate):
                 source["dense_output_features"].transpose(1,2),  
                 src_xyz = source["pos"],
                 src_neigh = source["neigh_idxs"],
-                sim_matrix = P_st_normalized.transpose(1,2),
-            ).transpose(1,2)
+                template_embed = template["selected_temp_embed"].transpose(1,2),
+            )
             
             target["fused_dense_output_features"] = self.SimilarityFusionEncoder(
                 target["dense_output_features"].transpose(1,2),  
                 src_xyz = target["pos"],
                 src_neigh = target["neigh_idxs"],
-                sim_matrix = P_tt_normalized.transpose(1,2),
-            ).transpose(1,2)
+                template_embed = template["selected_temp_embed"].transpose(1,2),
+            )
             
             P_normalized = switch_functions.measure_similarity(self.hparams.similarity_init, source["fused_dense_output_features"], target["fused_dense_output_features"])
 
