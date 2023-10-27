@@ -1,4 +1,4 @@
-CUDA_VISIBLE_DEVICES=5 python train_point_corr.py \
+CUDA_VISIBLE_DEVICES=9 python train_point_corr.py \
 --dataset_name tosca \
 --train_batch_size 4 \
 --do_train true \
@@ -15,11 +15,17 @@ CUDA_VISIBLE_DEVICES=5 python train_point_corr.py \
 --max_epochs 600 \
 --simi_metric embed \
 --simi_metric pos \
+--init_template \
 --save_template_assignment \
 --save_embedpos \
---init_template \
 --p_aug \
+--cycle_lambda 0.1 \
+--default_root_dir /data1/Dataset/djc/ShapeCorrespondence/ShapeTempNet/output/shape_corr/
+# --resume_from_checkpoint /ssd/djc/PointCorrespondence/ShapeTempNet/output/shape_corr/ImplicitTemplatePointCorr/arch_ImplicitTemplatePointCorr/dataset_name_tosca/latent_dim_768/26_10:20:37:15/epoch=474.ckpt
+
 # --ae_lambda 1.0 \
+
+
 #--template_div_lambda 0.0 \
 
 # --template_neigh_lambda 0.0 \
