@@ -9,13 +9,13 @@ CUDA_VISIBLE_DEVICES=6 python train_point_corr.py \
 --layer_list ssss \
 --steplr2 \
 --d_feedforward 512 \
---resume_from_checkpoint "/ssd/djc/PointCorrespondence/ShapeTempNet/output/shape_corr/ImplicitTemplatePointCorr/arch_ImplicitTemplatePointCorr/dataset_name_tosca/latent_dim_768/23_10:18:54:54/epoch=149.ckpt" \
+--resume_from_checkpoint "/ssd/djc/PointCorrespondence/ShapeTempNet/output/shape_corr/ImplicitTemplatePointCorr/arch_ImplicitTemplatePointCorr/dataset_name_tosca/latent_dim_768/27_10:15:09:57/epoch=599.ckpt" \
 --test_on_tosca \
 --simi_metric pos \
 --simi_metric embed \
 --init_template \
 --p_aug \
-# --offline_ot \
+--offline_ot \
 # --template_neigh_lambda 0.0
 # --template_div_lambda 0.0 \
 # --matrix_post_process offline_ot \
