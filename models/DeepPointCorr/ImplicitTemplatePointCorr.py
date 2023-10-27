@@ -393,7 +393,6 @@ class ImplicitTemplatePointCorr(ShapeCorrTemplate):
             
             P_normalized = switch_functions.measure_similarity(self.hparams.similarity_init, source["fused_dense_output_features"], target["fused_dense_output_features"])
 
-
         # cross nearest neighbors and weights
         source["cross_nn_weight"], source["cross_nn_sim"], source["cross_nn_idx"], target["cross_nn_weight"], target["cross_nn_sim"], target["cross_nn_idx"] =\
             get_s_t_neighbors(self.hparams.k_for_cross_recon, P_normalized, sim_normalization=self.hparams.sim_normalization)
@@ -415,6 +414,25 @@ class ImplicitTemplatePointCorr(ShapeCorrTemplate):
             template["t_cross_recon"], template["t_cross_recon_hard"] = self.reconstruction(template["selected_temp_pos"], target["t_cross_nn_idx"], target["t_cross_nn_weight"], self.hparams.k_for_cross_recon)
 
         return source, target, template, P_normalized, temperature
+    
+    def cycle_loss(self, src, target, template):
+        src_norm = src / src.norm(dim=-1)[:, :, None]
+        temp_norm = template / template.norm(dim=-1)[:, :, None]
+        tgt_norm = target / target.norm(dim=-1)[:, :, None]
+        
+        src_temp = torch.bmm(src_norm, temp_norm.transpose(1, 2))
+        temp_tgt = torch.bmm(temp_norm, tgt_norm.transpose(1, 2))
+        src_tgt = torch.bmm(src_norm, tgt_norm.transpose(1, 2))
+        
+        src_temp_norm = F.softmax(src_temp, dim=2)
+        temp_tgt_norm = F.softmax(temp_tgt, dim=2)
+        src_tgt_norm = F.softmax(src_tgt, dim=2)
+        
+        loss = F.cross_entropy(torch.bmm(src_temp_norm, temp_tgt_norm.transpose(1, 2)), src_tgt_norm)
+        return loss
+
+
+    
     @staticmethod
     def cosine_similarity(tensor1, tensor2):
         # 假设 tensor1 是 (N, C) 维度的张量，tensor2 是 (M, C) 维度的张量
@@ -542,12 +560,16 @@ class ImplicitTemplatePointCorr(ShapeCorrTemplate):
         if self.hparams.ae_lambda > 0.0:
             self.losses['src_ae_loss'] = self.hparams.ae_lambda*(F.smooth_l1_loss(data["source"]["pos"], data["source"]["ae_pos"]))
             self.losses['tgt_ae_loss'] = self.hparams.ae_lambda*(F.smooth_l1_loss(data["target"]["pos"], data["target"]["ae_pos"]))
-            self.losses['template_ae_loss'] = self.hparams.ae_lambda*(F.smooth_l1_loss(self.template_pos.detach(), data["template"]["ae_pos"]))
+            self.losses['template_ae_loss'] = self.hparams.ae_lambda*(F.smooth_l1_loss(self.template_pos, data["template"]["ae_pos"]))
         
         #template cross reconstruction loss
         if self.hparams.template_cross_lambda > 0.0:
             self.losses["template_source_cross_recon_loss"] = self.hparams.template_cross_lambda * (self.chamfer_loss(data["template"]["selected_temp_pos"], data["template"]["s_cross_recon"]))
-            self.losses["template_target_cross_recon_loss"] =self.hparams.template_cross_lambda * (self.chamfer_loss(data["template"]["selected_temp_pos"], data["template"]["t_cross_recon"]))
+            self.losses["template_target_cross_recon_loss"] = self.hparams.template_cross_lambda * (self.chamfer_loss(data["template"]["selected_temp_pos"], data["template"]["t_cross_recon"]))
+            
+        #cycle consistency loss
+        if self.hparams.cycle_lambda > 0.0:
+            self.losses["cycle_consistency_loss"] =self.hparams.cycle_lambda*self.cycle_loss(data["source"]["fused_dense_output_features"], data["target"]["fused_dense_output_features"], data["template"]["selected_temp_embed"])
             
         #template mapping loss
         if self.hparams.template_neigh_lambda > 0.0:
@@ -718,6 +740,7 @@ class ImplicitTemplatePointCorr(ShapeCorrTemplate):
         parser.add_argument("--init_template", nargs="?", default=False, type=str2bool, const=True, help="whether to use shape point cloud to initialize template")
         parser.add_argument("--ae_lambda", type=float, default=0.0, help="weight to use autoencoder decoder to constrain model training")
         parser.add_argument("--p_aug", nargs="?", default=False, type=str2bool, const=True, help="whether to use template to optimize similarity matrix between source and target")
+        parser.add_argument("--cycle_lambda", type=float, default=0.1, help="whether to use cycle consistency to optimize similarity matrix among source, target and template")
         parser.add_argument("--simi_metric", action='append', default=[], help="encoder layer list")
         parser.add_argument("--template_div_lambda", type=float, default=0.0, help="weight for template global feature diversity loss")
         parser.add_argument("--template_cross_lambda", type=float, default=1.0, help="weight for cross reconstruction loss between template and source/target")
