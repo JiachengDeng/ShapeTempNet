@@ -569,7 +569,7 @@ class ImplicitTemplatePointCorr(ShapeCorrTemplate):
             
         #cycle consistency loss
         if self.hparams.cycle_lambda > 0.0:
-            self.losses["cycle_consistency_loss"] =self.hparams.cycle_lambda*self.cycle_loss(data["source"]["fused_dense_output_features"], data["target"]["fused_dense_output_features"], data["template"]["selected_temp_embed"])
+            self.losses["cycle_consistency_loss"] =self.hparams.cycle_lambda*self.cycle_loss(data["source"]["dense_output_features"], data["target"]["dense_output_features"], data["template"]["selected_temp_embed"])
             
         #template mapping loss
         if self.hparams.template_neigh_lambda > 0.0:
