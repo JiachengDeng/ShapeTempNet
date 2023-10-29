@@ -569,7 +569,7 @@ class ImplicitTemplatePointCorr(ShapeCorrTemplate):
             
         #cycle consistency loss
         if self.hparams.cycle_lambda > 0.0:
-            self.losses["cycle_consistency_loss"] =self.hparams.cycle_lambda*self.cycle_loss(data["source"]["dense_output_features"], data["target"]["dense_output_features"], data["template"]["selected_temp_embed"])
+            self.losses["cycle_consistency_loss"] =self.hparams.cycle_lambda*self.cycle_loss(data["source"]["fused_dense_output_features"], data["target"]["fused_dense_output_features"], data["template"]["selected_temp_embed"])
             
         #template mapping loss
         if self.hparams.template_neigh_lambda > 0.0:
@@ -630,17 +630,6 @@ class ImplicitTemplatePointCorr(ShapeCorrTemplate):
         batch = self(batch)
         p = batch["P_normalized"].clone()
         
-        # ### For visualization
-        # p_cpu = p.data.cpu().numpy()
-        # source_xyz = pinput1.data.cpu().numpy()
-        # target_xyz = input2.data.cpu().numpy()
-        # label_cpu = label.data.cpu().numpy()
-        # np.save("./smal-test/p_{}".format(batch_idx), p_cpu)
-        # np.save("./smal-test/source_{}".format(batch_idx), source_xyz)
-        # np.save("./smal-test/target_{}".format(batch_idx), target_xyz)
-        # np.save("./smal-test/label_{}".format(batch_idx), label_cpu)
-        # ###
-        
         if self.hparams.use_dualsoftmax_loss:
             temp = 0.0002
             p = p * F.softmax(p/temp, dim=0)*len(p) #With an appropriate temperature parameter, the model achieves higher performance
@@ -649,6 +638,17 @@ class ImplicitTemplatePointCorr(ShapeCorrTemplate):
         if self.hparams.offline_ot: 
             for i in range(p.shape[0]):
                 p[i],_ = compute_optimal_transport(-p[i])
+
+        # ### For visualization
+        # p_cpu = p.data.cpu().numpy()
+        # source_xyz = pinput1.data.cpu().numpy()
+        # target_xyz = input2.data.cpu().numpy()
+        # label_cpu = label.data.cpu().numpy()
+        # np.save("./tosca-25-test/p_{}".format(batch_idx), p_cpu)
+        # np.save("./tosca-25-test/source_{}".format(batch_idx), source_xyz)
+        # np.save("./tosca-25-test/target_{}".format(batch_idx), target_xyz)
+        # np.save("./tosca-25-test/label_{}".format(batch_idx), label_cpu)
+        # ###
 
         _ = self.compute_acc(label, ratio_list, soft_labels, p,input2,track_dict=self.tracks,hparams=self.hparams)
 
