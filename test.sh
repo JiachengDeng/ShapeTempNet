@@ -1,5 +1,5 @@
-CUDA_VISIBLE_DEVICES=6 python train_point_corr.py \
---dataset_name tosca \
+CUDA_VISIBLE_DEVICES=1 python train_point_corr.py \
+--dataset_name surreal \
 --train_batch_size 4 \
 --do_train false \
 --optimizer adam \
@@ -9,8 +9,8 @@ CUDA_VISIBLE_DEVICES=6 python train_point_corr.py \
 --layer_list ssss \
 --steplr2 \
 --d_feedforward 512 \
---resume_from_checkpoint "/data1/Dataset/djc/ShapeCorrespondence/ShapeTempNet/output/shape_corr/ImplicitTemplatePointCorr/arch_ImplicitTemplatePointCorr/dataset_name_tosca/latent_dim_768/27_10:22:01:40/epoch=599.ckpt" \
---test_on_tosca \
+--resume_from_checkpoint "/data1/Dataset/djc/ShapeCorrespondence/ShapeTempNet/output/shape_corr/ImplicitTemplatePointCorr/arch_ImplicitTemplatePointCorr/dataset_name_surreal/latent_dim_768/29_10:17:01:38/epoch=374.ckpt" \
+--test_on_shrec \
 --simi_metric pos \
 --simi_metric embed \
 --init_template \
